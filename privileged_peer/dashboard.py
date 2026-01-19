@@ -8,7 +8,10 @@ import time
 from chunker import chunk_file
 from metadata import save_metadata
 from config import DEFAULT_TRACKER_PORT
-from tcp_handler import send_chunk_tcp, STORAGE_PATH
+from chunker import chunk_file
+from metadata import save_metadata
+from config import DEFAULT_TRACKER_PORT
+from tcp_handler import send_tcp_packet, STORAGE_PATH
 
 SERVER_URL = f"http://localhost:{DEFAULT_TRACKER_PORT}"
 
@@ -155,26 +158,54 @@ elif page == "Peer Management":
             selected_stem = file_options[selected_file]
             # Find max chunks for this file
             total_chunks = next((f['total_chunks'] for f in files if f['stem'] == selected_stem), 1)
-            chunk_idx = st.number_input("Chunk Index", min_value=0, max_value=total_chunks-1, step=1)
+            st.caption(f"Total Chunks: {total_chunks}")
             
-            if st.button("Push Chunk via TCP"):
+            if st.button(f"Push File ({total_chunks} Chunks) via TCP"):
                 if not target_ip or not target_tcp_port:
                     st.error("Please enter Target IP and TCP Port")
                 else:
-                    # Resolve chunk path
-                    chunk_name = f"{selected_stem}_chunk_{chunk_idx}"
-                    chunk_path = STORAGE_PATH / "chunks" / chunk_name
-                    
-                    if not chunk_path.exists():
-                        # Maybe it is in received_chunks if we are hybrid
-                        chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
-
-                    if not chunk_path.exists():
-                         st.error(f"Chunk file not found locally: {chunk_name}")
-                    else:
-                        with st.spinner(f"Pushing chunk {chunk_idx} to {target_ip}:{target_tcp_port}..."):
-                            success, msg = send_chunk_tcp(target_ip, int(target_tcp_port), selected_stem, chunk_idx, chunk_path)
-                            if success:
-                                st.success(f"Chunk sent successfully!")
-                            else:
-                                st.error(f"Failed to send: {msg}")
+                    try:
+                        target_port_int = int(target_tcp_port)
+                        
+                        # 1. Send Metadata
+                        meta_path = STORAGE_PATH / "metadata" / f"{selected_stem}.json"
+                        if not meta_path.exists():
+                            st.error("Metadata file not found locally")
+                        else:
+                            with st.spinner(f"Pushing File {selected_stem}..."):
+                                # Send Meta
+                                header = {"packet_type": "metadata", "file_stem": selected_stem}
+                                ok, msg = send_tcp_packet(target_ip, target_port_int, header, meta_path)
+                                if not ok:
+                                    st.error(f"Failed to send metadata: {msg}")
+                                else:
+                                    # Send Chunks Loop
+                                    sent_count = 0
+                                    failed = False
+                                    progress_bar = st.progress(0)
+                                    
+                                    for i in range(total_chunks):
+                                        chunk_name = f"{selected_stem}_chunk_{i}"
+                                        chunk_path = STORAGE_PATH / "chunks" / chunk_name
+                                        if not chunk_path.exists():
+                                            chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
+                                        
+                                        if not chunk_path.exists():
+                                            st.error(f"Chunk {i} not found")
+                                            failed = True
+                                            break
+                                            
+                                        header = {"packet_type": "chunk", "file_stem": selected_stem, "chunk_index": i}
+                                        ok, msg = send_tcp_packet(target_ip, target_port_int, header, chunk_path)
+                                        if not ok:
+                                            st.error(f"Failed at chunk {i}: {msg}")
+                                            failed = True
+                                            break
+                                        
+                                        sent_count += 1
+                                        progress_bar.progress(sent_count / total_chunks)
+                                    
+                                    if not failed:
+                                        st.success(f"Successfully pushed Metadata + {sent_count} Chunks!")
+                    except Exception as e:
+                         st.error(f"Error: {e}")

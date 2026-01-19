@@ -65,7 +65,7 @@ class TCPServer:
         try:
             # Protocol:
             # 1. 4 Bytes: Header Length (Network Byte Order - Big Endian)
-            # 2. N Bytes: JSON Header
+            # 2. N Bytes: JSON Header (must include 'packet_type')
             # 3. M Bytes: Raw Data
             
             # Read Header Length
@@ -78,33 +78,47 @@ class TCPServer:
             header_json = self._recv_exact(conn, header_len)
             header = json.loads(header_json.decode('utf-8'))
             
+            packet_type = header.get("packet_type", "chunk") # Default to chunk for backward compatibility
             file_stem = header.get("file_stem")
-            chunk_index = header.get("chunk_index")
             
-            logger.info(f"Receiving chunk via TCP: {file_stem} [{chunk_index}]")
-            print(f"[TCP] Receiving: {file_stem} chunk {chunk_index}")
-            
-            # Read Data (Process until EOF)
-            # Ideally header should have content-length, but for now we read until socket close
-            # or we can add content-length to header. Let's read chunks.
-            
-            chunk_name = f"{file_stem}_chunk_{chunk_index}"
-            save_path = STORAGE_PATH / "received_chunks" / chunk_name
-            STORAGE_PATH.joinpath("received_chunks").mkdir(parents=True, exist_ok=True)
-            
-            with open(save_path, "wb") as f:
-                while True:
-                    data = conn.recv(4096)
-                    if not data:
-                        break
-                    f.write(data)
-            
-            logger.info(f"Saved TCP chunk to {save_path}")
-            print(f"[TCP] Saved: {save_path}")
+            logger.info(f"Receiving TCP Packet: {packet_type} for {file_stem}")
+            print(f"[TCP] Receiving {packet_type}: {file_stem}")
+
+            if packet_type == "metadata":
+                # Save to storage/metadata
+                save_dir = STORAGE_PATH / "metadata"
+                save_dir.mkdir(parents=True, exist_ok=True)
+                save_path = save_dir / f"{file_stem}.json"
+                
+                # Receive content into memory then write (metadata is small)
+                # Or stream it. Streaming is safer.
+                with open(save_path, "wb") as f:
+                     while True:
+                        data = conn.recv(4096)
+                        if not data:
+                            break
+                        f.write(data)
+                print(f"[TCP] Saved Metadata: {save_path}")
+
+            else:
+                # Default: Chunk
+                chunk_index = header.get("chunk_index")
+                chunk_name = f"{file_stem}_chunk_{chunk_index}"
+                save_dir = STORAGE_PATH / "received_chunks"
+                save_dir.mkdir(parents=True, exist_ok=True)
+                save_path = save_dir / chunk_name
+                
+                with open(save_path, "wb") as f:
+                    while True:
+                        data = conn.recv(4096)
+                        if not data:
+                            break
+                        f.write(data)
+                print(f"[TCP] Saved Chunk: {save_path}")
             
         except Exception as e:
             logger.error(f"TCP Handler Error: {e}")
-            print(f"[TCP] Error: {e}")
+            print(f"[TCP] Receiver Error: {e}")
         finally:
             conn.close()
 
@@ -118,22 +132,18 @@ class TCPServer:
             data += packet
         return data
 
-def send_chunk_tcp(target_ip: str, target_port: int, file_stem: str, chunk_index: int, chunk_path: Path):
+def send_tcp_packet(target_ip: str, target_port: int, header: dict, file_path: Path):
     """
-    Send a chunk to a target peer via TCP
+    Generic TCP sender. Header must contain necessary info (packet_type, file_stem, etc.)
     """
     try:
-        if not chunk_path.exists():
-            raise FileNotFoundError(f"Chunk not found: {chunk_path}")
+        if not file_path.exists():
+            return False, f"File not found: {file_path}"
             
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((target_ip, int(target_port)))
             
             # Prepare Header
-            header = {
-                "file_stem": file_stem,
-                "chunk_index": chunk_index
-            }
             header_bytes = json.dumps(header).encode('utf-8')
             header_len = len(header_bytes)
             
@@ -142,14 +152,13 @@ def send_chunk_tcp(target_ip: str, target_port: int, file_stem: str, chunk_index
             s.sendall(header_bytes)
             
             # Send Data
-            with open(chunk_path, "rb") as f:
+            with open(file_path, "rb") as f:
                 while True:
                     data = f.read(4096)
                     if not data:
                         break
                     s.sendall(data)
             
-            print(f"[TCP] Sent {file_stem} chunk {chunk_index} to {target_ip}:{target_port}")
             return True, "Success"
             
     except Exception as e:

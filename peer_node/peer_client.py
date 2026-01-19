@@ -79,8 +79,7 @@ class ChunkData(BaseModel):
 
 
 from peer_server import start_peer_server
-from tcp_handler import TCPServer, send_chunk_tcp
-from tcp_handler import TCPServer, send_chunk_tcp
+from tcp_handler import TCPServer, send_tcp_packet
 
 class PeerClient:
     def __init__(self, tracker_url: str = f"http://localhost:{DEFAULT_TRACKER_PORT}"):
@@ -184,6 +183,22 @@ class PeerClient:
 
         for i in range(metadata['total_chunks']):
             success = False
+            
+            # Check if we already have this chunk locally
+            chunk_name = f"{file_stem}_chunk_{i}"
+            chunk_path = local_storage / chunk_name
+            if chunk_path.exists():
+                with open(chunk_path, "rb") as f:
+                    chunk_data = f.read()
+                if hashlib.sha256(chunk_data).hexdigest() == metadata['chunks'][i]['hash']:
+                    print(f"[DEBUG] Found chunk locally: {chunk_name}")
+                    downloaded_chunks.append({"index": i, "filename": chunk_name})
+                    # Announce it just in case we haven't yet
+                    self.announce_chunk(file_stem, i)
+                    success = True
+                    continue # Skip to next chunk
+            
+            # If not found locally, try peers
             peers = self.find_chunk_owners(file_stem, i)
             
             for peer in peers:
@@ -207,7 +222,7 @@ class PeerClient:
                     if r.status_code == 200:
                         chunk_data = r.content
                         if hashlib.sha256(chunk_data).hexdigest() == metadata['chunks'][i]['hash']:
-                            chunk_name = f"{file_stem}_chunk_{i}"
+                            # chunk_name already defined above
                             with open(local_storage / chunk_name, "wb") as f:
                                 f.write(chunk_data)
                             
@@ -257,26 +272,52 @@ class PeerClient:
             print(f"[ERROR] Reassembly failed: {e}")
             return False
 
-    def push_chunk_tcp(self, target_ip, target_port, file_stem, chunk_index):
+    def push_file_tcp(self, target_ip, target_port, file_stem):
         """
-        Manually push a chunk to another peer via TCP
+        Manually push an entire file (metadata + all chunks) to another peer via TCP
         """
         try:
-            chunk_name = f"{file_stem}_chunk_{chunk_index}"
-            chunk_path = STORAGE_PATH / "chunks" / chunk_name
-            # Fallback if I only have it as a received chunk
-            if not chunk_path.exists():
-                chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
+            # 1. Send Metadata
+            meta_path = STORAGE_PATH / "metadata" / f"{file_stem}.json"
+            if not meta_path.exists():
+                return "Metadata file not found"
             
-            if not chunk_path.exists():
-                return f"Chunk not found locally: {chunk_name}"
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            
+            print(f"[TCP] Pushing Metadata: {file_stem}")
+            header = {"packet_type": "metadata", "file_stem": file_stem}
+            success, msg = send_tcp_packet(target_ip, target_port, header, meta_path)
+            if not success:
+                return f"Failed to send metadata: {msg}"
+            
+            # 2. Send Chunks
+            total_chunks = meta['total_chunks']
+            sent_count = 0
+            
+            for i in range(total_chunks):
+                chunk_name = f"{file_stem}_chunk_{i}"
+                chunk_path = STORAGE_PATH / "chunks" / chunk_name
+                # Fallback check
+                if not chunk_path.exists():
+                    chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
+                
+                if not chunk_path.exists():
+                    return f"Chunk {i} not found locally"
 
-            print(f"[TCP] Pushing {chunk_name} to {target_ip}:{target_port}")
-            success, msg = send_chunk_tcp(target_ip, target_port, file_stem, chunk_index, chunk_path)
-            if success:
-                return "Success"
-            else:
-                return f"Failed: {msg}"
+                # Send Chunk Packet
+                header = {
+                    "packet_type": "chunk", 
+                    "file_stem": file_stem, 
+                    "chunk_index": i
+                }
+                success, msg = send_tcp_packet(target_ip, target_port, header, chunk_path)
+                if not success:
+                    return f"Stopped at chunk {i}: {msg}"
+                sent_count += 1
+                
+            return f"Success! Sent metadata + {sent_count} chunks."
+
         except Exception as e:
             return f"Error: {e}"
 

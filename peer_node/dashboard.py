@@ -190,16 +190,16 @@ with st.expander("Push Chunk to Peer", expanded=False):
         selected_stem = file_options[selected_file]
         # Find max chunks for this file
         total_chunks = next((f['total_chunks'] for f in files if f['stem'] == selected_stem), 1)
-        chunk_idx = st.number_input("Chunk Index", min_value=0, max_value=total_chunks-1, step=1)
+        st.caption(f"Total Chunks: {total_chunks}")
         
-        if st.button("Push Chunk via TCP"):
+        if st.button(f"Push File ({total_chunks} Chunks) via TCP"):
             if not target_ip or not target_tcp_port:
                 st.error("Please enter Target IP and TCP Port")
             else:
-                with st.spinner(f"Pushing chunk {chunk_idx} to {target_ip}:{target_tcp_port}..."):
-                    status = client.push_chunk_tcp(target_ip, int(target_tcp_port), selected_stem, chunk_idx)
+                with st.spinner(f"Pushing entire file {selected_file} to {target_ip}:{target_tcp_port}..."):
+                    status = client.push_file_tcp(target_ip, int(target_tcp_port), selected_stem)
                     if "Success" in status:
-                        st.success(f"Chunk sent successfully!")
+                        st.success(status)
                     else:
                         st.error(status)
 
@@ -230,7 +230,72 @@ if st.button("Download File"):
                     st.error(result)
 
 st.divider()
-st.subheader("My Received Chunks")
+st.subheader("Received / Pending Files (Pushed via TCP)")
+
+# Scan for metadata files in storage/metadata
+meta_dir = Path("..") / "storage" / "metadata"
+if meta_dir.exists():
+    meta_files = list(meta_dir.glob("*.json"))
+    if meta_files:
+        for mf in meta_files:
+             try:
+                 import json
+                 with open(mf, "r") as f:
+                     meta = json.load(f)
+                 
+                 stem = mf.stem
+                 original_name = meta.get('original_name', stem)
+                 total = meta.get('total_chunks', 0)
+                 
+                 # Check if we have all chunks
+                 chunk_dir = Path("..") / "storage" / "received_chunks"
+                 have_count = 0
+                 missing = []
+                 for i in range(total):
+                     if (chunk_dir / f"{stem}_chunk_{i}").exists():
+                         have_count += 1
+                     else:
+                         missing.append(i)
+                 
+                 # Check if already in downloads
+                 download_dir = Path("..") / "storage" / "downloads"
+                 is_done = (download_dir / original_name).exists()
+                 
+                 with st.container(border=True):
+                     c1, c2, c3 = st.columns([3, 2, 2])
+                     with c1:
+                         st.markdown(f"**{original_name}**")
+                         st.caption(f"Stem: `{stem}`")
+                     with c2:
+                         if have_count == total:
+                             st.success(f"{have_count}/{total} Chunks Ready")
+                         else:
+                             st.warning(f"{have_count}/{total} Chunks (Waiting)")
+                     with c3:
+                         if is_done:
+                             st.info("Already Assembled")
+                         elif have_count == total:
+                             if st.button("Finalize & Save", key=f"finalize_{stem}"):
+                                 with st.spinner("Reassembling..."):
+                                    ok, msg = client.reassemble_local_file(stem)
+                                    if ok:
+                                        st.success(f"Saved to downloads/{original_name}")
+                                        st.balloons()
+                                        time.sleep(1) # Give time to update
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                         else:
+                             st.write("Waiting for chunks...")
+             except Exception as e:
+                 st.error(f"Error reading {mf.name}: {e}")
+    else:
+        st.info("No pushed metadata found.")
+else:
+    st.info("Storage/metadata folder missing.")
+
+st.divider()
+st.subheader("My Received Chunks (Raw)")
 # Just scan directory to show what we have
 chunk_dir = Path("..") / "storage" / "received_chunks"
 if chunk_dir.exists():
