@@ -16,13 +16,13 @@ SERVER_URL = f"http://localhost:{DEFAULT_TRACKER_PORT}"
 if 'files' not in st.session_state:
     st.session_state.files = {}
 
-st.title("Admin (Tracker) Dashboard")
+st.title("Network Admin Console")
 
-page = st.sidebar.selectbox("Navigation", ["Upload Files", "Peer Management"])
+page = st.sidebar.selectbox("Navigation", ["Publish New File", "Connected Peers"])
 
 # Page 1: Upload Files
-if page == "Upload Files":
-    st.header("Upload and Chunk Files")
+if page == "Publish New File":
+    st.header("Publish & Share File")
     
     uploaded = st.file_uploader("Upload Assignment/File", type=['pdf', 'docx', 'txt', 'zip', 'jpg', 'png', 'mp4'])
     
@@ -45,7 +45,7 @@ if page == "Upload Files":
         save_metadata(chunk_info)
         
         st.session_state.files[uploaded.name] = chunk_info
-        st.success(f"File chunked into {chunk_info['total_chunks']} parts")
+        st.success(f"File processed: {chunk_info['total_chunks']} chunks created.")
         
         # Notify Server (Register the file)
         try:
@@ -57,19 +57,19 @@ if page == "Upload Files":
             }
             res = requests.post(f"{SERVER_URL}/register_file", json=reg_payload)
             if res.status_code == 200:
-                st.info("File registered with network tracker.")
+                st.info("File registered and live on network.")
             else:
                  st.error(f"Failed to register file: {res.status_code} {res.text}")
         except Exception as e:
             st.error(f"Failed to register file with tracker: {e}")
 
-        with st.expander("Chunk Details"):
+        with st.expander("Technical Details (Chunks)"):
             st.write(f"Original: {chunk_info['original_name']}")
             st.write(f"MIME: {chunk_info.get('mime_type')}")
             st.dataframe(chunk_info['chunks'])
 
     st.divider()
-    st.subheader("Active Shared Files (Network Registry)")
+    st.subheader("Global File Registry (Active Shares)")
 
     # Search Bar
     search_query = st.text_input("🔍 Search Files", placeholder="Type to filter...")
@@ -203,13 +203,13 @@ if page == "Upload Files":
     except Exception as e:
         st.warning(f"Tracker error: {e}")
 
-# Page 2: Peer Management
-elif page == "Peer Management":
-    st.header("Peer Management")
+# Page 2: Connected Peers
+elif page == "Connected Peers":
+    st.header("Network Status: Connected Peers")
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.subheader("Connected Peers (Live from API)")
+        st.subheader("Active Peer Nodes")
     with col2:
         if st.button("Refresh List"):
             st.rerun()

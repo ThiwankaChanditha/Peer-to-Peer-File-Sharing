@@ -1,32 +1,86 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
 import subprocess
-import sys
 import os
+import sys
+import threading
 
-def run_component(module_path):
-    """
-    Runs a Python module using the current virtual environment 
-    and the -m flag to resolve all internal paths correctly.
-    """
-    print(f"\n>>> Starting: {module_path}")
-    try:
-        # sys.executable ensures it uses your active 'venv'
-        subprocess.run([sys.executable, "-m", module_path])
-    except KeyboardInterrupt:
-        print(f"\n>>> Stopped: {module_path}")
+class P2PLauncher:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("P2P Network Launcher")
+        self.root.geometry("400x350")
+        self.root.resizable(False, False)
+        
+        # Style
+        style = ttk.Style()
+        style.configure("TButton", font=("Helvetica", 12), padding=10)
+        style.configure("Title.TLabel", font=("Helvetica", 16, "bold"))
+        
+        # Title
+        title = ttk.Label(root, text="P2P File Sharing System", style="Title.TLabel")
+        title.pack(pady=20)
+        
+        # Instructions
+        desc = ttk.Label(root, text="Select a component to launch:", font=("Helvetica", 10))
+        desc.pack(pady=5)
+        
+        # Buttons
+        self.btn_admin = ttk.Button(root, text="🚀 Launch Admin Console\n(Privileged Node & Tracker)", command=self.launch_admin)
+        self.btn_admin.pack(pady=15, fill="x", padx=40)
+        
+        self.btn_peer = ttk.Button(root, text="👤 Launch Peer Node\n(File Sharing Hub)", command=self.launch_peer)
+        self.btn_peer.pack(pady=15, fill="x", padx=40)
+        
+        # Status
+        self.status = ttk.Label(root, text="Ready", foreground="gray")
+        self.status.pack(side="bottom", pady=10)
+        
+        # Setup Env
+        self.cwd = os.path.dirname(os.path.abspath(__file__))
+
+    def run_streamlit(self, script_path, title):
+        try:
+            # Check if file exists
+            if not os.path.exists(os.path.join(self.cwd, script_path)):
+                messagebox.showerror("Error", f"File not found: {script_path}")
+                return
+
+            cmd = [sys.executable, "-m", "streamlit", "run", script_path]
+            
+            # Run in new console window
+            if os.name == 'nt': # Windows
+                subprocess.Popen(cmd, cwd=self.cwd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            else: # Unix/Mac
+                subprocess.Popen(cmd, cwd=self.cwd)
+                
+            self.status.config(text=f"Launched {title}...")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch: {e}")
+
+    def launch_admin(self):
+        # Start the Tracker Server (FastAPI) in a separate process
+        try:
+            server_script = os.path.join(self.cwd, "privileged_peer", "server.py")
+            if os.path.exists(server_script):
+                cmd = [sys.executable, server_script]
+                if os.name == 'nt':
+                    subprocess.Popen(cmd, cwd=self.cwd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                else:
+                    subprocess.Popen(cmd, cwd=self.cwd)
+                self.status.config(text="Started Tracker Server...")
+            else:
+                messagebox.showerror("Error", f"Server script not found: {server_script}")
+        except Exception as e:
+             messagebox.showerror("Error", f"Failed to start server: {e}")
+
+        # Start the Dashboard
+        self.run_streamlit("privileged_peer/dashboard.py", "Admin Node")
+
+    def launch_peer(self):
+        self.run_streamlit("peer_node/dashboard.py", "Peer Node")
 
 if __name__ == "__main__":
-    print("--- P2P System Launcher ---")
-    print("1) Run Privileged Peer (Tracker/Server)")
-    print("2) Run Peer Client")
-    print("3) Run Peer Server")
-    
-    choice = input("\nSelect a component to start (1-3): ")
-    
-    if choice == "1":
-        run_component("privileged_peer.server")
-    elif choice == "2":
-        run_component("peer_node.peer_client")
-    elif choice == "3":
-        run_component("peer_node.peer_server")
-    else:
-        print("Invalid selection.")
+    root = tk.Tk()
+    app = P2PLauncher(root)
+    root.mainloop()

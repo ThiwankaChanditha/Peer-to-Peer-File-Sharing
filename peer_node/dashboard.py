@@ -84,11 +84,11 @@ elif not hasattr(st.session_state.client, 'get_active_peers'):
 
 client = st.session_state.client
 
-st.title(f"Peer Node: {client.peer_id}")
+st.title(f"File Sharing Hub")
+st.caption(f"Node ID: {client.peer_id}")
 
 # Sidebar status
-st.sidebar.success(f"ID: {client.peer_id}")
-st.sidebar.success(f"ID: {client.peer_id}")
+st.sidebar.success(f"Status: Online")
 st.sidebar.info(f"HTTP: {client.host}:{client.port}")
 if hasattr(client, 'tcp_port') and client.tcp_port:
     st.sidebar.info(f"TCP: {client.host}:{client.tcp_port}")
@@ -97,7 +97,7 @@ else:
 
 # Tracker Connection Settings
 st.sidebar.divider()
-st.sidebar.subheader("Connection Settings")
+st.sidebar.subheader("Network Settings")
 new_tracker_url = st.sidebar.text_input("Tracker URL", value=client.tracker_url)
 
 if st.sidebar.button("Update / Reconnect"):
@@ -128,7 +128,7 @@ if not client.token:
             st.rerun()
 
 st.sidebar.divider()
-st.sidebar.subheader("Network Peers")
+st.sidebar.subheader("Neighbors (Peers)")
 # We can use find_chunk_owners logic or just ask for all peers?
 # Client doesn't have a public get_peers method, but we can hit the endpoint manually or add it.
 # For simplicity, we can try to guess or just show count if possible.
@@ -143,7 +143,7 @@ try:
 
     if r.status_code == 200:
         peers = r.json()
-        st.sidebar.write(f"Active Peers: {len(peers)}")
+        st.sidebar.write(f"Active Nodes: {len(peers)}")
 
         for p in peers:
             if p.get("peer_id") != client.peer_id:
@@ -158,7 +158,7 @@ except Exception as e:
 # -----------------------------
 
 st.sidebar.divider()
-st.sidebar.subheader("My Cluster (Latency)")
+st.sidebar.subheader("My Cluster (Network Health)")
 
 if hasattr(client, "cluster_peers") and client.cluster_peers:
     for pid, lat in client.cluster_peers.items():
@@ -171,13 +171,13 @@ if st.sidebar.button("🔄 Refresh Cluster"):
     client.update_cluster()
     st.rerun()
 
-st.header("Available Files")
+st.header("Network Library")
 
-with st.expander("Browse Network Files", expanded=True):
+with st.expander("Browse & Download", expanded=True):
     # Search
-    search_query = st.text_input("🔍 Search Network Files", placeholder="Type name to filter...")
+    search_query = st.text_input("🔍 Search Files", placeholder="Type name to filter...")
 
-    if st.button("Refresh File List"):
+    if st.button("Refresh Library"):
         st.rerun()
         
     network_files = client.list_files()
@@ -190,12 +190,12 @@ with st.expander("Browse Network Files", expanded=True):
             
         for f in filtered:
             with st.container(border=True):
-                c1, c2, c3 = st.columns([3, 1, 1])
+                c1, c2, c3 = st.columns([3, 2, 2])
                 with c1:
                     st.markdown(f"**📄 {f['name']}**")
                     st.caption(f"Size: {f['total_chunks']} chunks | Type: {f.get('mime_type', 'unknown')}")
                 with c2:
-                    if st.button("Download", key=f"dl_{f['stem']}", use_container_width=True):
+                    if st.button("📥 Download", key=f"dl_{f['stem']}", use_container_width=True):
                         # Verify we want to download this
                         with st.status(f"Downloading {f['name']}...", expanded=True) as status:
                             res = client.download_file(f['stem'])
@@ -212,7 +212,7 @@ with st.expander("Browse Network Files", expanded=True):
                 with c3:
                     # Integrated Push
                     # Using popover if available in this streamlit version, otherwise expander
-                    with st.expander("➡️ Push"):
+                    with st.expander("Distribute"):
                         active_peers = client.get_active_peers()
                         others = [p for p in active_peers if p['peer_id'] != client.peer_id]
                         peer_opts = {f"{p['peer_id']} ({p['host']})": p for p in others}
@@ -229,48 +229,48 @@ with st.expander("Browse Network Files", expanded=True):
                                 else:
                                     st.error(status)
     else:
-        st.info("No files found on network.")
+        st.info("Library is empty. (Check connection or wait for uploads)")
 
 
-st.header("Manual Download (Advanced)")
+st.header("Advanced Actions")
+with st.expander("Manual Download via ID"):
+    file_stem = st.text_input("Enter File ID (stem)", placeholder="my_document")
 
-file_stem = st.text_input("Enter File Name (stem) to Download", placeholder="my_document")
-
-if st.button("Download File"):
-    if not client.token:
-        st.error("Cannot download: Not connected to network.")
-    else:
-        with st.status("Downloading...", expanded=True) as status:
-            st.write("Fetching metadata...")
-            meta = client.get_metadata(file_stem)
-            if not meta:
-                status.update(label="File not found!", state="error")
-                st.error("File not found on tracker.")
-            else:
-                st.write(f"Found {meta['original_name']} ({meta['total_chunks']} chunks). Finding peers...")
-                result = client.download_file(file_stem)
-                
-                if "complete" in result:
-                    status.update(label="Download Complete!", state="complete")
-                    st.success(f"File saved to `storage/downloads/{meta['original_name']}`.\nCheck terminal for debug path.")
-                    st.balloons()
-                elif "Partial" in result:
-                     status.update(label="Partial Download", state="warning")
-                     st.warning(result)
-                     if st.button("Retry / Repair Missing Chunks"):
-                         with st.spinner("Retrying..."):
-                             res_retry = client.repair_file(file_stem)
-                             if "complete" in res_retry:
-                                 st.success("Repair successful!")
-                                 st.rerun()
-                             else:
-                                 st.error(f"Still missing chunks: {res_retry}")
+    if st.button("Download by ID"):
+        if not client.token:
+            st.error("Cannot download: Not connected to network.")
+        else:
+            with st.status("Downloading...", expanded=True) as status:
+                st.write("Fetching metadata...")
+                meta = client.get_metadata(file_stem)
+                if not meta:
+                    status.update(label="File not found!", state="error")
+                    st.error("File not found on tracker.")
                 else:
-                    status.update(label="Download Failed", state="error")
-                    st.error(result)
+                    st.write(f"Found {meta['original_name']} ({meta['total_chunks']} chunks). Finding peers...")
+                    result = client.download_file(file_stem)
+                    
+                    if "complete" in result:
+                        status.update(label="Download Complete!", state="complete")
+                        st.success(f"File saved to `storage/downloads/{meta['original_name']}`.")
+                        st.balloons()
+                    elif "Partial" in result:
+                        status.update(label="Partial Download", state="warning")
+                        st.warning(result)
+                        if st.button("Retry / Repair Missing Chunks"):
+                            with st.spinner("Retrying..."):
+                                res_retry = client.repair_file(file_stem)
+                                if "complete" in res_retry:
+                                    st.success("Repair successful!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Still missing chunks: {res_retry}")
+                    else:
+                        status.update(label="Download Failed", state="error")
+                        st.error(result)
 
 st.divider()
-st.subheader("My Received Files")
+st.subheader("My Library (Downloads)")
 
 # Search Received
 recv_search = st.text_input("🔍 Search Local Files", placeholder="Filter...")
