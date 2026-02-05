@@ -46,12 +46,15 @@ class P2PLauncher:
                 messagebox.showerror("Error", f"File not found: {script_path}")
                 return
 
-            cmd = [sys.executable, "-m", "streamlit", "run", script_path]
+            # Use sys.executable (which points to .venv python if started from batch)
+            python_exe = sys.executable
             
-            # Run in new console window
-            if os.name == 'nt': # Windows
+            # Use cmd /k to keep the window open so we can see errors
+            if os.name == 'nt':
+                cmd = ["cmd", "/k", python_exe, "-m", "streamlit", "run", script_path]
                 subprocess.Popen(cmd, cwd=self.cwd, creationflags=subprocess.CREATE_NEW_CONSOLE)
-            else: # Unix/Mac
+            else:
+                cmd = [python_exe, "-m", "streamlit", "run", script_path]
                 subprocess.Popen(cmd, cwd=self.cwd)
                 
             self.status.config(text=f"Launched {title}...")
@@ -63,10 +66,12 @@ class P2PLauncher:
         try:
             server_script = os.path.join(self.cwd, "privileged_peer", "server.py")
             if os.path.exists(server_script):
-                cmd = [sys.executable, server_script]
+                python_exe = sys.executable
                 if os.name == 'nt':
+                    cmd = ["cmd", "/k", python_exe, server_script]
                     subprocess.Popen(cmd, cwd=self.cwd, creationflags=subprocess.CREATE_NEW_CONSOLE)
                 else:
+                    cmd = [python_exe, server_script]
                     subprocess.Popen(cmd, cwd=self.cwd)
                 self.status.config(text="Started Tracker Server...")
             else:
