@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import requests
+import json
 from pathlib import Path
 import socket
 import logging
@@ -76,6 +77,10 @@ if 'client' not in st.session_state:
             st.toast(f"Connected to network as {st.session_state.client.peer_id}")
         else:
             st.error("Failed to auto-join network. Check Tracker.")
+elif not hasattr(st.session_state.client, 'get_active_peers'):
+    st.warning("Applying system updates... Re-initializing Client to load new features.")
+    del st.session_state.client
+    st.rerun()
 
 client = st.session_state.client
 
@@ -131,17 +136,40 @@ st.sidebar.subheader("Network Peers")
 # We should probably add a get_peers method to client or just call the API.
 try:
     # Quick hack to get peers from tracker public endpoint
-    # The endpoint is /admin/peers but maybe we should use that
-    r = requests.get(f"{client.tracker_url}/admin/peers")
+    r = requests.get(
+        f"{client.tracker_url}/admin/peers",
+        timeout=2
+    )
+
     if r.status_code == 200:
         peers = r.json()
         st.sidebar.write(f"Active Peers: {len(peers)}")
-        for p in peers:
-            if p['peer_id'] != client.peer_id:
-                st.sidebar.caption(f"👤 {p['peer_id']}")
-except:
-    st.sidebar.caption("Peer list unavailable")
 
+        for p in peers:
+            if p.get("peer_id") != client.peer_id:
+                st.sidebar.caption(f"👤 {p['peer_id']}")
+    else:
+        st.sidebar.caption("Peer list unavailable")
+
+except Exception as e:
+    st.sidebar.caption("Peer list unavailable")
+    st.sidebar.caption(f"⚠️ {type(e).__name__}")
+
+# -----------------------------
+
+st.sidebar.divider()
+st.sidebar.subheader("My Cluster (Latency)")
+
+if hasattr(client, "cluster_peers") and client.cluster_peers:
+    for pid, lat in client.cluster_peers.items():
+        color = "green" if lat < 50 else "orange" if lat < 200 else "red"
+        st.sidebar.markdown(f":{color}[**{pid}**: {lat:.1f} ms]")
+else:
+    st.sidebar.caption("Calculating latency...")
+
+if st.sidebar.button("🔄 Refresh Cluster"):
+    client.update_cluster()
+    st.rerun()
 
 st.header("Available Files")
 
@@ -166,6 +194,9 @@ with st.expander("Browse Network Files", expanded=True):
                                 status.update(label="Complete!", state="complete")
                                 st.success(f"Saved {f['name']}")
                                 st.balloons()
+                            elif "Partial" in res:
+                                status.update(label="Partial Download", state="warning")
+                                st.warning(res)
                             else:
                                 status.update(label="Failed", state="error")
                                 st.error(res)
@@ -174,11 +205,28 @@ with st.expander("Browse Network Files", expanded=True):
 
 st.header("Direct TCP Transfer (Push)")
 with st.expander("Push Chunk to Peer", expanded=False):
-    c1, c2 = st.columns(2)
-    with c1:
-        target_ip = st.text_input("Target IP", placeholder="192.168.1.X")
-    with c2:
-        target_tcp_port = st.text_input("Target TCP Port", value="9001", placeholder="9001")
+    # Select Target Peer
+    active_peers = client.get_active_peers()
+    
+    # Filter out self
+    others = [p for p in active_peers if p['peer_id'] != client.peer_id]
+    
+    peer_options = {f"{p['peer_id']} ({p['host']})": p for p in others}
+    
+    selected_peer_key = st.selectbox("Select Target Peer", options=list(peer_options.keys()) + ["Manual Input"])
+    
+    if selected_peer_key == "Manual Input":
+        c1, c2 = st.columns(2)
+        with c1:
+            target_ip = st.text_input("Target IP", placeholder="192.168.1.X")
+        with c2:
+            target_tcp_port = st.text_input("Target TCP Port", value="9001", placeholder="9001")
+    else:
+        target_peer = peer_options[selected_peer_key]
+        target_ip = target_peer['host']
+        # Guess TCP port (Convention: HTTP Port + 1)
+        target_tcp_port = str(target_peer['port'] + 1) 
+        st.info(f"Targeting: {target_ip}:{target_tcp_port}")
     
     # Files to send (from available list)
     files = client.list_files()
@@ -225,6 +273,17 @@ if st.button("Download File"):
                     status.update(label="Download Complete!", state="complete")
                     st.success(f"File saved to `storage/downloads/{meta['original_name']}`.\nCheck terminal for debug path.")
                     st.balloons()
+                elif "Partial" in result:
+                     status.update(label="Partial Download", state="warning")
+                     st.warning(result)
+                     if st.button("Retry / Repair Missing Chunks"):
+                         with st.spinner("Retrying..."):
+                             res_retry = client.repair_file(file_stem)
+                             if "complete" in res_retry:
+                                 st.success("Repair successful!")
+                                 st.rerun()
+                             else:
+                                 st.error(f"Still missing chunks: {res_retry}")
                 else:
                     status.update(label="Download Failed", state="error")
                     st.error(result)

@@ -281,6 +281,36 @@ async def get_all_peers():
     """Endpoint for Dashboard to list peers"""
     return [p.dict() for p in approved_peers.values()]
 
+# --- auto-discovery ---
+def broadcast_presence():
+    """Background thread to broadcast presence via UDP"""
+    import time
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    
+    port = 9999
+    message = json.dumps({
+        "role": "privileged_peer",
+        "ip": get_lan_ip(),
+        "port": DEFAULT_TRACKER_PORT
+    }).encode('utf-8')
+    
+    print(f"[UDP] Broadcasting presence on port {port}...")
+    
+    while True:
+        try:
+            udp_socket.sendto(message, ('<broadcast>', port))
+            time.sleep(5)
+        except Exception as e:
+            print(f"[UDP] Broadcast error: {e}")
+            time.sleep(5)
+
+@app.on_event("startup")
+async def start_broadcaster():
+    import threading
+    t = threading.Thread(target=broadcast_presence, daemon=True)
+    t.start()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=DEFAULT_TRACKER_PORT)

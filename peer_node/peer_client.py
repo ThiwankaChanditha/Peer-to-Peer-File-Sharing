@@ -2,6 +2,7 @@ import requests
 import threading
 import time
 import hashlib
+import json
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -110,6 +111,78 @@ class PeerClient:
             print(f"Failed to start TCP server: {e}")
             self.tcp_port = 0
 
+        # Start UDP Listener for Auto-Discovery
+        self.udp_thread = threading.Thread(target=self.listen_for_broadcasts, daemon=True)
+        self.udp_thread.start()
+
+        # Clustering
+        self.cluster_peers = {} # peer_id -> latency_ms
+        self.cluster_thread = threading.Thread(target=self.update_cluster_loop, daemon=True)
+        self.cluster_thread.start()
+
+    def update_cluster_loop(self):
+        """Background thread to periodically update cluster latencies"""
+        while self.running:
+            try:
+                if self.token:
+                    self.update_cluster()
+            except Exception:
+                pass
+            time.sleep(30) # Refresh every 30 seconds
+
+    def measure_latency(self, host: str, port: int) -> float:
+        """Measure latency to a peer (tcp handshake time approximation)"""
+        try:
+            start = time.time()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect((host, port))
+            s.close()
+            return (time.time() - start) * 1000 # ms
+        except Exception:
+            return 9999.0 # Infinity
+
+    def update_cluster(self):
+        """Scan active peers and update local cluster info"""
+        peers = self.get_active_peers()
+        new_cluster = {}
+        
+        for p in peers:
+            if p['peer_id'] == self.peer_id: continue
+            
+            # Using TCP port (mapped as HTTP+1) for test, or just HTTP port
+            # Checking HTTP port (p['port']) is safer as we know it's open for API
+            lat = self.measure_latency(p['host'], p['port'])
+            if lat < 9999:
+                new_cluster[p['peer_id']] = lat
+                
+        # Sort by latency
+        self.cluster_peers = dict(sorted(new_cluster.items(), key=lambda item: item[1]))
+        print(f"[CLUSTER] Updated cluster: {self.cluster_peers}")
+
+    def listen_for_broadcasts(self):
+        """Listen for UDP broadcasts from the Privileged Node"""
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.bind(("", 9999))
+        print("[UDP] Listening for broadcasts on port 9999...")
+        
+        while self.running:
+            try:
+                data, addr = udp.recvfrom(1024)
+                msg = json.loads(data.decode())
+                
+                if msg.get("role") == "privileged_peer":
+                    new_url = f"http://{msg['ip']}:{msg['port']}"
+                    
+                    # If not connected or connected to localhost default, switch
+                    if not self.token or "localhost" in self.tracker_url:
+                        print(f"[UDP] Found Tracker at {new_url}. Connecting...")
+                        self.tracker_url = new_url
+                        self.join_network()
+            except Exception as e:
+                print(f"[UDP] Error: {e}")
+                time.sleep(1)
+
 
 
     def join_network(self) -> bool:
@@ -146,6 +219,18 @@ class PeerClient:
         except Exception:
             return None
 
+    def get_active_peers(self) -> List[dict]:
+        """Fetch list of all active peers from the tracker"""
+        try:
+            # We use the admin endpoint which currently returns all peers
+            res = requests.get(f"{self.tracker_url}/admin/peers", timeout=5)
+            if res.status_code == 200:
+                return res.json()
+            return []
+        except Exception as e:
+            print(f"Error fetching peers: {e}")
+            return []
+
     def list_files(self) -> List[dict]:
         """Fetch list of available files from tracker"""
         try:
@@ -178,6 +263,17 @@ class PeerClient:
 
         local_storage = STORAGE_PATH / "received_chunks"
         local_storage.mkdir(parents=True, exist_ok=True)
+        
+        # Save metadata to local storage so we can re-share it later
+        meta_dir = STORAGE_PATH / "metadata"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        meta_path = meta_dir / f"{file_stem}.json"
+        
+        try:
+            with open(meta_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            print(f"[WARN] Failed to save metadata locally: {e}")
 
         downloaded_chunks = []
 
@@ -200,6 +296,10 @@ class PeerClient:
             
             # If not found locally, try peers
             peers = self.find_chunk_owners(file_stem, i)
+            
+            # SORT PEERS BY CLUSTER LATENCY
+            # Peers not in cluster get penalty
+            peers.sort(key=lambda p: self.cluster_peers.get(p['peer_id'], 9999))
             
             for peer in peers:
                 if peer['peer_id'] == self.peer_id: continue
@@ -234,11 +334,33 @@ class PeerClient:
                     continue
             
             if not success:
-                return f"Failed to download chunk {i}"
+               print(f"[WARN] Chunk {i} missing from all known peers")
+               # Don't return error immediately, proceed to try other chunks
+               continue
+        
+        # Final check
+        # Scan what we have
+        missing_indices = []
+        downloaded_indices = []
+        
+        # Check all chunks again
+        for i in range(metadata['total_chunks']):
+            chunk_name = f"{file_stem}_chunk_{i}"
+            if not (local_storage / chunk_name).exists():
+                missing_indices.append(i)
+            else:
+                downloaded_indices.append({"index": i, "filename": chunk_name})
+        
+        if missing_indices:
+            return f"Partial Download. Missing chunks: {missing_indices}"
 
-        if self.reassemble(file_stem, metadata, downloaded_chunks):
+        if self.reassemble(file_stem, metadata, downloaded_indices):
             return "Download complete"
         return "Reassembly failed"
+
+    def repair_file(self, file_stem: str):
+        """Attempt to download missing chunks for a file"""
+        return self.download_file(file_stem)
 
     def announce_chunk(self, file_stem: str, chunk_index: int):
         try:

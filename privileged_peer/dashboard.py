@@ -8,9 +8,6 @@ import time
 from chunker import chunk_file
 from metadata import save_metadata
 from config import DEFAULT_TRACKER_PORT
-from chunker import chunk_file
-from metadata import save_metadata
-from config import DEFAULT_TRACKER_PORT
 from tcp_handler import send_tcp_packet, STORAGE_PATH
 
 SERVER_URL = f"http://localhost:{DEFAULT_TRACKER_PORT}"
@@ -135,77 +132,105 @@ elif page == "Peer Management":
     # Manual Add (Simulated via Client logic really, but here for Admin override?)
     st.divider()
     
+    # --- Enhanced Peer Management & Sending ---
+    st.divider()
+    
     st.header("Direct TCP Transfer (Push)")
-    with st.expander("Push Chunk to Peer", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            target_ip = st.text_input("Target IP", placeholder="192.168.1.X")
-        with c2:
-            target_tcp_port = st.text_input("Target TCP Port", value="9001", placeholder="9001")
+    
+    # Files to send
+    try:
+        res = requests.get(f"{SERVER_URL}/files")
+        files = res.json() if res.status_code == 200 else []
+    except:
+        files = []
         
-        # Files to send (fetch from server API or local logic)
+    file_options = {f['name']: f['stem'] for f in files} if files else {}
+    selected_file_name = st.selectbox("Select File to Send", options=list(file_options.keys()) if file_options else ["No files available"])
+    
+    if selected_file_name and file_options:
+        selected_stem = file_options[selected_file_name]
+        total_chunks = next((f['total_chunks'] for f in files if f['stem'] == selected_stem), 1)
+        st.info(f"Selected: **{selected_file_name}** ({total_chunks} Chunks)")
+        
+        # Target Selection
+        st.subheader("Select Targets")
+        
+        # fetch peers again or use from above
+        active_peers = []
         try:
-            res = requests.get(f"{SERVER_URL}/files")
-            files = res.json() if res.status_code == 200 else []
+             res = requests.get(f"{SERVER_URL}/admin/peers")
+             if res.status_code == 200:
+                 peers_data = res.json()
+                 # Format for multiselect
+                 peer_map = {f"{p['peer_id']} ({p['host']})": p for p in peers_data}
+                 active_peers = list(peer_map.keys())
         except:
-            files = []
-            
-        file_options = {f['name']: f['stem'] for f in files} if files else {}
+             pass
         
-        selected_file = st.selectbox("Select File", options=list(file_options.keys()) if file_options else ["No files available"])
+        target_options = ["Send to ALL Connected Peers"] + active_peers
+        selected_targets = st.multiselect("Choose Recipients", target_options, default="Send to ALL Connected Peers")
         
-        if selected_file and file_options:
-            selected_stem = file_options[selected_file]
-            # Find max chunks for this file
-            total_chunks = next((f['total_chunks'] for f in files if f['stem'] == selected_stem), 1)
-            st.caption(f"Total Chunks: {total_chunks}")
-            
-            if st.button(f"Push File ({total_chunks} Chunks) via TCP"):
-                if not target_ip or not target_tcp_port:
-                    st.error("Please enter Target IP and TCP Port")
+        if st.button("🚀 Initiating Transfer"):
+            if not selected_targets:
+                st.warning("No targets selected.")
+            else:
+                # Determine actual targets
+                final_targets = []
+                if "Send to ALL Connected Peers" in selected_targets:
+                    final_targets = peers_data # all of them
                 else:
+                    for t in selected_targets:
+                        if t in peer_map:
+                            final_targets.append(peer_map[t])
+                
+                st.write(f"Preparing to send to {len(final_targets)} peers...")
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                success_count = 0
+                
+                for idx, peer in enumerate(final_targets):
+                    target_ip = peer['host']
+                    # We assume peer is listenting on TCP = port + 1 (convention)
+                    # Ideally we should store TCP port in peer info, but for now we follow convention or explicit input?
+                    # The prompt says "privileged peers should be systematically displayed... and send to many peers"
+                    # We'll try to guess TCP port or use a known offset. 
+                    # In peer_client.py: self.tcp_port = self.port + 1
+                    target_port = peer['port'] + 1
+                    
+                    status_text.text(f"Sending to {peer['peer_id']} ({target_ip}:{target_port})...")
+                    
                     try:
-                        target_port_int = int(target_tcp_port)
-                        
-                        # 1. Send Metadata
+                         # 1. Send Metadata
                         meta_path = STORAGE_PATH / "metadata" / f"{selected_stem}.json"
-                        if not meta_path.exists():
-                            st.error("Metadata file not found locally")
-                        else:
-                            with st.spinner(f"Pushing File {selected_stem}..."):
-                                # Send Meta
-                                header = {"packet_type": "metadata", "file_stem": selected_stem}
-                                ok, msg = send_tcp_packet(target_ip, target_port_int, header, meta_path)
-                                if not ok:
-                                    st.error(f"Failed to send metadata: {msg}")
-                                else:
-                                    # Send Chunks Loop
-                                    sent_count = 0
-                                    failed = False
-                                    progress_bar = st.progress(0)
-                                    
-                                    for i in range(total_chunks):
-                                        chunk_name = f"{selected_stem}_chunk_{i}"
-                                        chunk_path = STORAGE_PATH / "chunks" / chunk_name
-                                        if not chunk_path.exists():
-                                            chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
-                                        
-                                        if not chunk_path.exists():
-                                            st.error(f"Chunk {i} not found")
-                                            failed = True
-                                            break
-                                            
-                                        header = {"packet_type": "chunk", "file_stem": selected_stem, "chunk_index": i}
-                                        ok, msg = send_tcp_packet(target_ip, target_port_int, header, chunk_path)
-                                        if not ok:
-                                            st.error(f"Failed at chunk {i}: {msg}")
-                                            failed = True
-                                            break
-                                        
-                                        sent_count += 1
-                                        progress_bar.progress(sent_count / total_chunks)
-                                    
-                                    if not failed:
-                                        st.success(f"Successfully pushed Metadata + {sent_count} Chunks!")
+                        ok, msg = send_tcp_packet(target_ip, target_port, {"packet_type": "metadata", "file_stem": selected_stem}, meta_path)
+                        
+                        if not ok:
+                            st.error(f"❌ Failed to connect to {peer['peer_id']}: {msg}")
+                            continue
+                            
+                        # 2. Send Chunks
+                        chunk_errors = False
+                        for i in range(total_chunks):
+                            chunk_name = f"{selected_stem}_chunk_{i}"
+                            chunk_path = STORAGE_PATH / "chunks" / chunk_name
+                            
+                            ok, msg = send_tcp_packet(target_ip, target_port, {"packet_type": "chunk", "file_stem": selected_stem, "chunk_index": i}, chunk_path)
+                            if not ok:
+                                st.error(f"Failed chunk {i} to {peer['peer_id']}")
+                                chunk_errors = True
+                                break
+                        
+                        if not chunk_errors:
+                            st.success(f"✅ Sent to {peer['peer_id']}")
+                            success_count += 1
+                            
                     except Exception as e:
-                         st.error(f"Error: {e}")
+                        st.error(f"Error with {peer['peer_id']}: {e}")
+                    
+                    progress_bar.progress((idx + 1) / len(final_targets))
+                
+                status_text.text("Batch sending complete.")
+                if success_count == len(final_targets):
+                    st.balloons()
