@@ -174,17 +174,26 @@ if st.sidebar.button("🔄 Refresh Cluster"):
 st.header("Available Files")
 
 with st.expander("Browse Network Files", expanded=True):
+    # Search
+    search_query = st.text_input("🔍 Search Network Files", placeholder="Type name to filter...")
+
     if st.button("Refresh File List"):
         st.rerun()
         
     network_files = client.list_files()
     if network_files:
-        for f in network_files:
+        # Filter
+        filtered = [f for f in network_files if search_query.lower() in f['name'].lower()]
+        
+        if not filtered:
+            st.info("No files match your search.")
+            
+        for f in filtered:
             with st.container(border=True):
-                c1, c2 = st.columns([4, 1])
+                c1, c2, c3 = st.columns([3, 1, 1])
                 with c1:
                     st.markdown(f"**📄 {f['name']}**")
-                    st.write(f"Size: {f['total_chunks']} chunks | Type: {f.get('mime_type', 'unknown')}")
+                    st.caption(f"Size: {f['total_chunks']} chunks | Type: {f.get('mime_type', 'unknown')}")
                 with c2:
                     if st.button("Download", key=f"dl_{f['stem']}", use_container_width=True):
                         # Verify we want to download this
@@ -200,56 +209,28 @@ with st.expander("Browse Network Files", expanded=True):
                             else:
                                 status.update(label="Failed", state="error")
                                 st.error(res)
+                with c3:
+                    # Integrated Push
+                    # Using popover if available in this streamlit version, otherwise expander
+                    with st.expander("➡️ Push"):
+                        active_peers = client.get_active_peers()
+                        others = [p for p in active_peers if p['peer_id'] != client.peer_id]
+                        peer_opts = {f"{p['peer_id']} ({p['host']})": p for p in others}
+                        
+                        tgt_key = st.selectbox("To:", list(peer_opts.keys()), key=f"tgt_{f['stem']}")
+                        if st.button("Send", key=f"snd_{f['stem']}"):
+                            if tgt_key:
+                                target = peer_opts[tgt_key]
+                                tcp_port = target['port'] + 1
+                                st.toast(f"Pushing to {target['host']}...")
+                                status = client.push_file_tcp(target['host'], int(tcp_port), f['stem'])
+                                if "Success" in status:
+                                    st.success("Sent!")
+                                else:
+                                    st.error(status)
     else:
         st.info("No files found on network.")
 
-st.header("Direct TCP Transfer (Push)")
-with st.expander("Push Chunk to Peer", expanded=False):
-    # Select Target Peer
-    active_peers = client.get_active_peers()
-    
-    # Filter out self
-    others = [p for p in active_peers if p['peer_id'] != client.peer_id]
-    
-    peer_options = {f"{p['peer_id']} ({p['host']})": p for p in others}
-    
-    selected_peer_key = st.selectbox("Select Target Peer", options=list(peer_options.keys()) + ["Manual Input"])
-    
-    if selected_peer_key == "Manual Input":
-        c1, c2 = st.columns(2)
-        with c1:
-            target_ip = st.text_input("Target IP", placeholder="192.168.1.X")
-        with c2:
-            target_tcp_port = st.text_input("Target TCP Port", value="9001", placeholder="9001")
-    else:
-        target_peer = peer_options[selected_peer_key]
-        target_ip = target_peer['host']
-        # Guess TCP port (Convention: HTTP Port + 1)
-        target_tcp_port = str(target_peer['port'] + 1) 
-        st.info(f"Targeting: {target_ip}:{target_tcp_port}")
-    
-    # Files to send (from available list)
-    files = client.list_files()
-    file_options = {f['name']: f['stem'] for f in files} if files else {}
-    
-    selected_file = st.selectbox("Select File", options=list(file_options.keys()) if file_options else ["No files available"])
-    
-    if selected_file and file_options:
-        selected_stem = file_options[selected_file]
-        # Find max chunks for this file
-        total_chunks = next((f['total_chunks'] for f in files if f['stem'] == selected_stem), 1)
-        st.caption(f"Total Chunks: {total_chunks}")
-        
-        if st.button(f"Push File ({total_chunks} Chunks) via TCP"):
-            if not target_ip or not target_tcp_port:
-                st.error("Please enter Target IP and TCP Port")
-            else:
-                with st.spinner(f"Pushing entire file {selected_file} to {target_ip}:{target_tcp_port}..."):
-                    status = client.push_file_tcp(target_ip, int(target_tcp_port), selected_stem)
-                    if "Success" in status:
-                        st.success(status)
-                    else:
-                        st.error(status)
 
 st.header("Manual Download (Advanced)")
 
@@ -289,67 +270,93 @@ if st.button("Download File"):
                     st.error(result)
 
 st.divider()
-st.subheader("Received / Pending Files (Pushed via TCP)")
+st.subheader("My Received Files")
+
+# Search Received
+recv_search = st.text_input("🔍 Search Local Files", placeholder="Filter...")
 
 # Scan for metadata files in storage/metadata
 meta_dir = Path("..") / "storage" / "metadata"
 if meta_dir.exists():
     meta_files = list(meta_dir.glob("*.json"))
     if meta_files:
+        # Filter
+        filtered_meta = []
         for mf in meta_files:
+            try:
+                with open(mf, "r") as f:
+                    m = json.load(f)
+                name = m.get('original_name', mf.stem)
+                if recv_search.lower() in name.lower():
+                     filtered_meta.append((mf, m))
+            except:
+                pass
+                
+        if not filtered_meta:
+            st.info("No files match.")
+
+        for mf, meta in filtered_meta:
              try:
-                 import json
-                 with open(mf, "r") as f:
-                     meta = json.load(f)
-                 
                  stem = mf.stem
                  original_name = meta.get('original_name', stem)
                  total = meta.get('total_chunks', 0)
                  
-                 # Check if we have all chunks
+                 # Check if we have all chunks (received_chunks)
                  chunk_dir = Path("..") / "storage" / "received_chunks"
                  have_count = 0
-                 missing = []
                  for i in range(total):
                      if (chunk_dir / f"{stem}_chunk_{i}").exists():
                          have_count += 1
-                     else:
-                         missing.append(i)
                  
-                 # Check if already in downloads
+                 # Check if final download exists
                  download_dir = Path("..") / "storage" / "downloads"
-                 is_done = (download_dir / original_name).exists()
+                 final_path = download_dir / original_name
+                 is_done = final_path.exists()
                  
                  with st.container(border=True):
-                     c1, c2, c3 = st.columns([3, 2, 2])
+                     c1, c2, c3 = st.columns([3, 2, 1])
                      with c1:
                          st.markdown(f"**{original_name}**")
                          st.caption(f"Stem: `{stem}`")
                      with c2:
-                         if have_count == total:
-                             st.success(f"{have_count}/{total} Chunks Ready")
-                         else:
-                             st.warning(f"{have_count}/{total} Chunks (Waiting)")
-                     with c3:
                          if is_done:
-                             st.info("Already Assembled")
+                             st.success("✅ Assembled")
                          elif have_count == total:
-                             if st.button("Finalize & Save", key=f"finalize_{stem}"):
-                                 with st.spinner("Reassembling..."):
-                                    ok, msg = client.reassemble_local_file(stem)
-                                    if ok:
-                                        st.success(f"Saved to downloads/{original_name}")
-                                        st.balloons()
-                                        time.sleep(1) # Give time to update
-                                        st.rerun()
-                                    else:
-                                        st.error(msg)
+                             st.info(f"Chunks Ready ({have_count}/{total})")
+                             if st.button("Finalize", key=f"fin_{stem}"):
+                                 ok, msg = client.reassemble_local_file(stem)
+                                 if ok:
+                                     st.balloons()
+                                     st.rerun()
                          else:
-                             st.write("Waiting for chunks...")
+                             st.warning(f"Incomplete ({have_count}/{total})")
+                     with c3:
+                         if st.button("Delete", key=f"del_{stem}", type="primary"):
+                             # Delete all traces
+                             try:
+                                 # 1. Metadata
+                                 mf.unlink()
+                                 # 2. Received Chunks
+                                 for p in chunk_dir.glob(f"{stem}_chunk_*"):
+                                     p.unlink()
+                                 # 3. Final File (Optional? Let's do it to clean up)
+                                 if final_path.exists():
+                                     final_path.unlink()
+                                 # 4. Standard Chunks (if we acted as uploader?)
+                                 # Careful, maybe we shouldn't delete if we are the uploader of this file?
+                                 # For this task, we assume 'My Received Files' targets things we downloaded/received.
+                                 # But metadata is shared. 
+                                 # Let's delete safely.
+                                 st.toast(f"Deleted {original_name}")
+                                 time.sleep(1)
+                                 st.rerun()
+                             except Exception as e:
+                                 st.error(f"Error: {e}")
+
              except Exception as e:
                  st.error(f"Error reading {mf.name}: {e}")
     else:
-        st.info("No pushed metadata found.")
+        st.info("No local files found (no metadata).")
 else:
     st.info("Storage/metadata folder missing.")
 

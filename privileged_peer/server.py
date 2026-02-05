@@ -276,6 +276,44 @@ async def register_file(file_info: FileRegistration):
     )
     return {"status": "registered", "file_stem": file_info.file_stem}
 
+@app.delete("/flush_registry")
+async def flush_registry():
+    """Admin: Clear all files from registry"""
+    count = len(file_registry)
+    file_registry.clear()
+    
+    # Delete all metadata files
+    try:
+        meta_dir = STORAGE_PATH / "metadata"
+        if meta_dir.exists():
+            for f in meta_dir.glob("*.json"):
+                f.unlink()
+    except Exception as e:
+        print(f"Error flushing metadata: {e}")
+        
+    print(f"[ADMIN] Flushed registry. Removed {count} items.")
+    return {"status": "flushed", "removed_count": count}
+
+class FileUnregistration(BaseModel):
+    file_stem: str
+
+@app.post("/unregister_file")
+async def unregister_file(info: FileUnregistration):
+    """Admin: Remove file from registry"""
+    if info.file_stem in file_registry:
+        del file_registry[info.file_stem]
+        
+        # Also delete the metadata file from disk so it doesn't reappear on restart
+        meta_path = STORAGE_PATH / "metadata" / f"{info.file_stem}.json"
+        try:
+            if meta_path.exists():
+                meta_path.unlink()
+        except Exception as e:
+            print(f"Error deleting metadata {meta_path}: {e}")
+            
+        return {"status": "unregistered"}
+    return {"status": "not_found", "message": "File not in registry"}
+
 @app.get("/admin/peers")
 async def get_all_peers():
     """Endpoint for Dashboard to list peers"""
