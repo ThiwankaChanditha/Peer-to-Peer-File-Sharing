@@ -1,0 +1,22 @@
+2026-02-24 22:00:41,261 - INFO - TCP Server started at 0.0.0.0:8002
+2026-02-24 22:00:42,448 - INFO - TCP Server started at 172.16.0.2:5000
+2026-02-24 22:00:43,139 - INFO - Initialized Peer peer_1771950642 at 172.16.0.2:5000
+2026-02-24 22:00:43,167 - INFO - Joined network successfully. Configured port: 5000
+TCP Server started at 0.0.0.0:8002
+[TCP] Server started on port 8002
+[UDP] Broadcasting presence on port 9999...
+TCP Server started at 172.16.0.2:5000
+Peer joined: peer_1771950642
+Tracker active peers:
+[
+  {
+    "peer_id": "peer_1771950642",
+    "host": "172.16.0.2",
+    "port": 5000,
+    "status": "active",
+    "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnjIIgEVLzyVMUza5bM6A\nPTEhTuduXBe0I2k6dYtkHWp6+KkM8PV4VykPR/JOK7QkmpDaUeZ1R4JkXGmxicc9\n3DPbkn4Meg50edbbUmOAcboPEghrxLaAy98cB4LTPtNjj2d6cMiijOOEbHdjcwEp\nYwle0aLDiSkgdbfFcHxe8wqtTVZfZFes1aCYTpCWOnCVCgwFOjcWlL74lsMIxVfu\ntc9jnDNpXjRjxYRd9q93Ugtc161aoJDOPGqUvC+8lwqJGLiQSaMQ0xBMiMtYE6Yh\nzVc5KCOoljiO3qNoBD9yFtXvNtaoRX0po8L9Xq9UiJTB/1K/ZRNK4hyNq8QPb2JA\nDQIDAQAB\n-----END PUBLIC KEY-----\n"
+  }
+]
+
+Submitting assignment...
+Result: True - Success

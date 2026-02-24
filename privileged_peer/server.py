@@ -357,6 +357,9 @@ async def start_tcp_server():
     try:
         def get_peer_pk(peer_id):
             p = approved_peers.get(peer_id)
+            print(f"[DEBUG] TCP get_peer_pk: peer_id={peer_id}, found={p is not None}, total_peers={len(approved_peers)}")
+            if p:
+                print(f"[DEBUG] TCP get_peer_pk: public_key={p.public_key[:20] if p.public_key else None}")
             return p.public_key if p else None
 
         tcp_port = DEFAULT_TRACKER_PORT + 1

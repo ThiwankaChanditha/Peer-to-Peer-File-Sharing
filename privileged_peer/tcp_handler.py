@@ -106,8 +106,10 @@ class TCPServer:
                 signature_b64 = header.get("signature")
                 original_name = header.get("original_name")
                 
+                print(f"[TCP DEBUG] Checking public key for {peer_id}. Callback present: {self.get_public_key_cb is not None}")
                 if self.get_public_key_cb:
                     public_key = self.get_public_key_cb(peer_id)
+                    print(f"[TCP DEBUG] Result from callback: {public_key[:20] if public_key else None}")
                 else:
                     # We need to look up the public key from the server's registry
                     # This requires importing the server registry, but since it's a global we can try to access it
@@ -115,6 +117,7 @@ class TCPServer:
                     
                     peer_info = approved_peers.get(peer_id)
                     public_key = peer_info.public_key if peer_info else None
+                    print(f"[TCP DEBUG] Result from fallback import: {public_key[:20] if public_key else None}")
                 
                 if not public_key:
                     logger.error(f"Cannot verify assignment: Public key for {peer_id} not found.")

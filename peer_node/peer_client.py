@@ -242,6 +242,9 @@ class PeerClient:
         try:
             response = requests.post(url, json=data, timeout=5)
             if response.status_code == 200:
+                resp_json = response.json()
+                if "token" in resp_json:
+                    self.token = resp_json["token"]
                 logging.info(f"Joined network successfully. Configured port: {self.port}")
                 return True
             logging.error(f"Join failed: {response.text}")
