@@ -204,12 +204,27 @@ class PeerClient:
                 data, addr = sock.recvfrom(1024)
                 msg = json.loads(data.decode())
                 if msg.get("action") == "tracker_presence":
+                    # Tracker may send 'tracker_url' directly, or 'ip' and 'port'
                     new_url = msg.get("tracker_url")
-                    if new_url and new_url != self.tracker_url:
-                        logging.info(f"Discovered new Tracker via UDP at {new_url}")
-                        self.tracker_url = new_url
-                        # Re-join network
-                        self.join_network()
+                    if not new_url:
+                        # Fallback to older broadcast format
+                        ip = msg.get("ip")
+                        port = msg.get("port", DEFAULT_TRACKER_PORT)
+                        if ip:
+                            new_url = f"http://{ip}:{port}"
+                            
+                    if new_url:
+                        # Ensure it's got http:// and a port
+                        if not new_url.startswith("http"):
+                            new_url = f"http://{new_url}"
+                        if len(new_url.split(":")) == 2: # http://ip
+                            new_url = f"{new_url}:{DEFAULT_TRACKER_PORT}"
+                            
+                        if new_url != self.tracker_url:
+                            logging.info(f"Discovered new Tracker via UDP at {new_url}")
+                            self.tracker_url = new_url
+                            # Re-join network
+                            self.join_network()
             except Exception as e:
                 logging.error(f"UDP listener error: {e}")
                 time.sleep(2)

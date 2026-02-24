@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
 import json
 import secrets
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 from pydantic import BaseModel
 
 import socket
@@ -63,7 +63,7 @@ class PeerInfo(BaseModel):
     host: str
     port: int
     status: str = "active"
-    public_key: str = None
+    public_key: Optional[str] = None
 
 class ChunkLocation(BaseModel):
     chunk_index: int
@@ -192,7 +192,7 @@ async def get_chunk_owners(file_stem: str, chunk_index: int, peer_id: str, token
     for owner_id in owners:
         if owner_id in approved_peers:
             p = approved_peers[owner_id]
-            result.append(p.dict())
+            result.append(p.model_dump())
             
     return {"owners": result}
 
@@ -326,7 +326,7 @@ async def unregister_file(info: FileUnregistration):
 @app.get("/admin/peers")
 async def get_all_peers():
     """Endpoint for Dashboard to list peers"""
-    return [p.dict() for p in approved_peers.values()]
+    return [p.model_dump() for p in approved_peers.values()]
 
 # --- auto-discovery ---
 def broadcast_presence():
@@ -355,8 +355,16 @@ def broadcast_presence():
 @app.on_event("startup")
 async def start_tcp_server():
     try:
+        def get_peer_pk(peer_id):
+            p = approved_peers.get(peer_id)
+            return p.public_key if p else None
+
         tcp_port = DEFAULT_TRACKER_PORT + 1
-        tcp_server = TCPServer(host="0.0.0.0", start_port=tcp_port)
+        tcp_server = TCPServer(
+            host="0.0.0.0", 
+            start_port=tcp_port,
+            get_public_key_cb=get_peer_pk
+        )
         actual_port = tcp_server.start()
         print(f"[TCP] Server started on port {actual_port}")
     except Exception as e:

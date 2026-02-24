@@ -14,12 +14,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("TCP_Handler")
 
 class TCPServer:
-    def __init__(self, host: str, start_port: int):
+    def __init__(self, host: str, start_port: int, get_public_key_cb=None):
         self.host = host
         self.port = start_port
         self.socket = None
         self.running = False
         self.thread = None
+        self.get_public_key_cb = get_public_key_cb
 
     def start(self):
         """Start the TCP server on an available port"""
@@ -105,12 +106,15 @@ class TCPServer:
                 signature_b64 = header.get("signature")
                 original_name = header.get("original_name")
                 
-                # We need to look up the public key from the server's registry
-                # This requires importing the server registry, but since it's a global we can try to access it
-                from server import approved_peers
-                
-                peer_info = approved_peers.get(peer_id)
-                public_key = peer_info.public_key if peer_info else None
+                if self.get_public_key_cb:
+                    public_key = self.get_public_key_cb(peer_id)
+                else:
+                    # We need to look up the public key from the server's registry
+                    # This requires importing the server registry, but since it's a global we can try to access it
+                    from server import approved_peers
+                    
+                    peer_info = approved_peers.get(peer_id)
+                    public_key = peer_info.public_key if peer_info else None
                 
                 if not public_key:
                     logger.error(f"Cannot verify assignment: Public key for {peer_id} not found.")

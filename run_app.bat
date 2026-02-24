@@ -8,19 +8,22 @@ echo ===================================================
 
 echo [1/4] Checking for 'uv' package manager...
 where uv >nul 2>nul
-if %errorlevel% neq 0 (
-    echo 'uv' is not found. Installing via pip...
-    pip install uv
-    if %errorlevel% neq 0 (
-        echo.
-        echo [ERROR] Failed to install 'uv'. Please ensure Python and pip are in your PATH.
-        pause
-        exit /b
-    )
-    echo 'uv' installed successfully.
-) else (
+if %errorlevel% equ 0 (
     echo Found 'uv'.
+    goto skip_uv_install
 )
+
+echo 'uv' is not found. Installing via pip...
+pip install uv
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Failed to install 'uv'. Please ensure Python and pip are in your PATH.
+    pause
+    exit /b
+)
+echo 'uv' installed successfully.
+
+:skip_uv_install
 
 echo.
 echo [2/4] Checking Virtual Environment...
