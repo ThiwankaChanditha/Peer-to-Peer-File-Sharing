@@ -10,6 +10,9 @@ from typing import List, Dict, Optional
 
 from peer_client import PeerClient
 
+# Hack to allow importing from parent dir if run directly
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # Configuration Constants
 CHUNK_SIZE = 1024 * 512  # 512 KB
 STORAGE_DIR = "storage"
@@ -160,8 +163,8 @@ except Exception as e:
 st.sidebar.divider()
 st.sidebar.subheader("My Cluster (Network Health)")
 
-if hasattr(client, "cluster_peers") and client.cluster_peers:
-    for pid, lat in client.cluster_peers.items():
+if hasattr(client, "cluster") and client.cluster:
+    for pid, lat in client.cluster.items():
         color = "green" if lat < 50 else "orange" if lat < 200 else "red"
         st.sidebar.markdown(f":{color}[**{pid}**: {lat:.1f} ms]")
 else:
@@ -204,7 +207,7 @@ with st.expander("Browse & Download", expanded=True):
                                 st.success(f"Saved {f['name']}")
                                 st.balloons()
                             elif "Partial" in res:
-                                status.update(label="Partial Download", state="warning")
+                                status.update(label="Partial Download", state="error")
                                 st.warning(res)
                             else:
                                 status.update(label="Failed", state="error")
@@ -237,7 +240,7 @@ with st.expander("📝 Assignment Submission", expanded=False):
     if uploaded_assignment:
         if st.button("Sign & Submit", key="submit_assignment_btn", type="primary"):
             # Temporarily save uploaded file
-            temp_dir = Path("..") / "temp_uploads"
+            temp_dir = BASE_DIR / "temp_uploads"
             temp_dir.mkdir(parents=True, exist_ok=True)
             
             orig_name = uploaded_assignment.name
@@ -293,7 +296,7 @@ with st.expander("Manual Download via ID"):
                         st.success(f"File saved to `storage/downloads/{meta['original_name']}`.")
                         st.balloons()
                     elif "Partial" in result:
-                        status.update(label="Partial Download", state="warning")
+                        status.update(label="Partial Download", state="error")
                         st.warning(result)
                         if st.button("Retry / Repair Missing Chunks"):
                             with st.spinner("Retrying..."):
@@ -314,7 +317,7 @@ st.subheader("My Library (Downloads)")
 recv_search = st.text_input("🔍 Search Local Files", placeholder="Filter...")
 
 # Scan for metadata files in storage/metadata
-meta_dir = Path("..") / "storage" / "metadata"
+meta_dir = BASE_DIR / "storage" / "metadata"
 if meta_dir.exists():
     meta_files = list(meta_dir.glob("*.json"))
     if meta_files:
@@ -340,14 +343,14 @@ if meta_dir.exists():
                  total = meta.get('total_chunks', 0)
                  
                  # Check if we have all chunks (received_chunks)
-                 chunk_dir = Path("..") / "storage" / "received_chunks"
+                 chunk_dir = BASE_DIR / "storage" / "received_chunks"
                  have_count = 0
                  for i in range(total):
                      if (chunk_dir / f"{stem}_chunk_{i}").exists():
                          have_count += 1
                  
                  # Check if final download exists
-                 download_dir = Path("..") / "storage" / "downloads"
+                 download_dir = BASE_DIR / "storage" / "downloads"
                  final_path = download_dir / original_name
                  is_done = final_path.exists()
                  
@@ -401,7 +404,7 @@ else:
 st.divider()
 st.subheader("My Received Chunks (Raw)")
 # Just scan directory to show what we have
-chunk_dir = Path("..") / "storage" / "received_chunks"
+chunk_dir = BASE_DIR / "storage" / "received_chunks"
 if chunk_dir.exists():
     chunks = list(chunk_dir.glob("*_chunk_*"))
     st.write(f"Total Chunks Stored: {len(chunks)}")

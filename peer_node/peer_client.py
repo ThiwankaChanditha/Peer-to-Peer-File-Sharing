@@ -97,11 +97,30 @@ class PeerClient:
         self.peer_id = f"peer_{int(time.time())}"
         self.host = get_lan_ip()
         
-        # Determine TCP Port
-        base_port = 5000
-        # The new TCPServer automatically binds & finds an open port.
-        self.tcp_server = TCPServer(self.host, base_port)
-        self.port = self.tcp_server.start()
+        # Find contiguous ports for HTTP (port) and TCP (port + 1)
+        def find_port_pair(start):
+            p = start
+            while p < 65500:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s1:
+                        s1.bind((self.host, p))
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
+                            s2.bind((self.host, p + 1))
+                            return p
+                except OSError:
+                    p += 1
+            return start
+
+        self.port = find_port_pair(5000)
+        self.tcp_port = self.port + 1
+
+        self.tcp_server = TCPServer(self.host, self.tcp_port)
+        # We override the inner auto-increment since we verified the port
+        self.tcp_server.port = self.tcp_port
+        self.tcp_server.start()
+        
+        # Start the HTTP chunk server
+        threading.Thread(target=start_peer_server, args=(self.host, self.port), daemon=True).start()
 
         # Generate or load RSA Keys for this peer
         self.peer_storage_path = BASE_DIR / "storage" / "peer_data" / self.peer_id
@@ -346,7 +365,7 @@ class PeerClient:
             
             # SORT PEERS BY CLUSTER LATENCY
             # Peers not in cluster get penalty
-            peers.sort(key=lambda p: self.cluster_peers.get(p['peer_id'], 9999))
+            peers.sort(key=lambda p: self.cluster.get(p['peer_id'], 9999))
             
             for peer in peers:
                 if peer['peer_id'] == self.peer_id: continue

@@ -68,6 +68,9 @@ class ChunkData(BaseModel):
     size: int
 
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+STORAGE_PATH = BASE_DIR / "storage"
+
 app = FastAPI(title="Peer Node Server")
 
 @app.get("/chunk/{file_stem}/{chunk_index}")
@@ -75,10 +78,10 @@ async def upload_chunk(file_stem: str, chunk_index: int):
     # Verify we actually have this chunk
     chunk_name = f"{file_stem}_chunk_{chunk_index}"
     # Default storage for received chunks
-    chunk_path = Path("..") / STORAGE_DIR / "received_chunks" / chunk_name
+    chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
     
     if not chunk_path.exists():
-        chunk_path = Path("..") / STORAGE_DIR / "chunks" / chunk_name
+        chunk_path = STORAGE_PATH / "chunks" / chunk_name
 
     if not chunk_path.exists():
         raise HTTPException(status_code=404, detail="Chunk not found")
