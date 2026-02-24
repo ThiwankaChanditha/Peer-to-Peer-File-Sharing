@@ -3,6 +3,7 @@ import threading
 import time
 import hashlib
 import json
+import random
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -11,16 +12,26 @@ import socket
 import logging
 from pathlib import Path
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+import sys
+
+# Hack to allow importing from parent dir if run directly
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
+
+# Import security modules
+from security.auth import generate_token
+from security.hashing import sha256
+from security.crypto import load_or_generate_keys
 
 # Configuration Constants
 CHUNK_SIZE = 1024 * 512  # 512 KB
 # Resolve STORAGE_DIR relative to this script:
 # peer_node/peer_client.py -> parent(peer_node) -> parent(Network) -> storage
-BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_PATH = BASE_DIR / "storage"
 STORAGE_DIR = "storage" # Legacy/Unused mostly but kept for consts
 DEFAULT_TRACKER_PORT = 8000
+MAX_CLUSTER_SIZE = 20
+PEER_SAMPLE_SIZE = 5
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,30 +39,27 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def get_lan_ip():
     """Detect the local machine's LAN IP address"""
     try:
-        # Connect to a public DNS server (does not actually send data)
-        # to determine the most appropriate local interface IP
+        # Create a dummy socket to detect routing IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
+        s.settimeout(0)
+        s.connect(('8.8.8.8', 1)) # Connect to a known external IP
         ip = s.getsockname()[0]
         s.close()
         return ip
     except Exception:
-        return "127.0.0.1"
+        return '127.0.0.1' # Fallback to localhost
 
 def find_available_port(start_port: int, max_port: int = 65535, host: str = "") -> int:
     """Find an available port starting from start_port"""
-    for port in range(start_port, max_port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                # Bind to the specific host we intend to use, or "" for all
+    port = start_port
+    while port <= max_port:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((host, port))
                 return port
-            except OSError:
-                continue
-    # If we get here, no port found or race condition. 
-    import random
-    raise RuntimeError("No available ports found (checked range)")
-    raise RuntimeError("No available ports found")
+        except OSError:
+            port += 1
+    raise RuntimeError(f"No available ports found between {start_port} and {max_port}")
 
 # --- Shared Data Models ---
 
@@ -60,6 +68,7 @@ class PeerInfo(BaseModel):
     host: str
     port: int
     status: str = "active"
+    public_key: Optional[str] = None
 
 class ChunkLocation(BaseModel):
     chunk_index: int
@@ -87,123 +96,143 @@ class PeerClient:
         self.tracker_url = tracker_url
         self.peer_id = f"peer_{int(time.time())}"
         self.host = get_lan_ip()
-        self.port = find_available_port(9000, host=self.host)
-        self.token = None
-        self.running = True
         
-        # Start the background server for uploading chunks
-        self.server_thread = threading.Thread(
-            target=start_peer_server, 
-            args=(self.host, self.port),
-            daemon=True
-        )
-        self.server_thread.start()
-        print(f"Peer Node (HTTP) started at {self.host}:{self.port}")
+        # Determine TCP Port
+        base_port = 5000
+        # The new TCPServer automatically binds & finds an open port.
+        self.tcp_server = TCPServer(self.host, base_port)
+        self.port = self.tcp_server.start()
 
-        # Start TCP Server for raw transfers
-        # Try to bind to port + 1, otherwise let it find one
-        self.tcp_port = self.port + 1
-        self.tcp_server = TCPServer(self.host, self.tcp_port)
-        try:
-            self.tcp_port = self.tcp_server.start()
-            print(f"Peer Node (TCP) started at {self.host}:{self.tcp_port}")
-        except Exception as e:
-            print(f"Failed to start TCP server: {e}")
-            self.tcp_port = 0
+        # Generate or load RSA Keys for this peer
+        self.peer_storage_path = BASE_DIR / "storage" / "peer_data" / self.peer_id
+        self.private_key, self.public_key_obj = load_or_generate_keys(self.peer_storage_path)
+        
+        from security.crypto import serialize_public_key
+        self.public_key = serialize_public_key(self.public_key_obj)
 
-        # Start UDP Listener for Auto-Discovery
-        self.udp_thread = threading.Thread(target=self.listen_for_broadcasts, daemon=True)
-        self.udp_thread.start()
-
-        # Clustering
-        self.cluster_peers = {} # peer_id -> latency_ms
-        self.cluster_thread = threading.Thread(target=self.update_cluster_loop, daemon=True)
-        self.cluster_thread.start()
-
+        self.token = generate_token()
+        self.active_peers = []
+        
+        # cluster: dict mapping peer_id -> latency (ms)
+        self.cluster = {}
+        
+        # Start background threads
+        # Start the UDP broadcaster listener thread
+        # We'll rely on Tracker config but it listens on UDP 8001
+        threading.Thread(target=self.listen_for_broadcasts, daemon=True).start()
+        
+        # Start cluster update thread (heartbeat & latency checks)
+        threading.Thread(target=self.update_cluster_loop, daemon=True).start()
+        
+        logging.info(f"Initialized Peer {self.peer_id} at {self.host}:{self.port}")
+        
     def update_cluster_loop(self):
         """Background thread to periodically update cluster latencies"""
-        while self.running:
+        while True:
+            time.sleep(15) # Refresh every 15 seconds
             try:
-                if self.token:
-                    self.update_cluster()
-            except Exception:
-                pass
-            time.sleep(30) # Refresh every 30 seconds
+                self.update_cluster()
+            except Exception as e:
+                logging.error(f"Failed to update cluster: {e}")
 
     def measure_latency(self, host: str, port: int) -> float:
         """Measure latency to a peer (tcp handshake time approximation)"""
+        start = time.time()
         try:
-            start = time.time()
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect((host, port))
-            s.close()
+            with socket.create_connection((host, int(port)), timeout=2.0) as s:
+                pass
             return (time.time() - start) * 1000 # ms
         except Exception:
-            return 9999.0 # Infinity
+            return float('inf')
 
     def update_cluster(self):
-        """Scan active peers and update local cluster info"""
-        peers = self.get_active_peers()
-        new_cluster = {}
+        """
+        Refreshes the local cluster of 'best' peers.
+        Strategy:
+        1. Always re-check existing cluster members (to verify they are still fast).
+        2. Randomly sample a few new peers from the rest of the network (to explore).
+        3. Keep only the top MAX_CLUSTER_SIZE peers sorted by latency.
+        """
+        all_peers = self.get_active_peers()
+        if not all_peers:
+            return
+
+        network_peers = {p['peer_id']: p for p in all_peers if p['peer_id'] != self.peer_id}
         
-        for p in peers:
-            if p['peer_id'] == self.peer_id: continue
+        # 1. Existing members
+        candidates = set(self.cluster.keys())
+        
+        # 2. Add random samples from network
+        available = list(set(network_peers.keys()) - candidates)
+        if available:
+            sample_size = min(PEER_SAMPLE_SIZE, len(available))
+            candidates.update(random.sample(available, sample_size))
             
-            # Using TCP port (mapped as HTTP+1) for test, or just HTTP port
-            # Checking HTTP port (p['port']) is safer as we know it's open for API
-            lat = self.measure_latency(p['host'], p['port'])
-            if lat < 9999:
-                new_cluster[p['peer_id']] = lat
-                
-        # Sort by latency
-        self.cluster_peers = dict(sorted(new_cluster.items(), key=lambda item: item[1]))
-        print(f"[CLUSTER] Updated cluster: {self.cluster_peers}")
+        new_cluster_latencies = {}
+        
+        for pid in candidates:
+            if pid in network_peers:
+                p_info = network_peers[pid]
+                lat = self.measure_latency(p_info['host'], p_info['port'])
+                if lat < float('inf'):
+                    new_cluster_latencies[pid] = lat
+                    
+        # 3. Sort and keep top ones
+        sorted_peers = sorted(new_cluster_latencies.items(), key=lambda x: x[1])
+        top_peers = sorted_peers[:MAX_CLUSTER_SIZE]
+        
+        self.cluster = dict(top_peers)
+        logging.debug(f"Updated Cluster (Size: {len(self.cluster)}): {self.cluster}")
 
     def listen_for_broadcasts(self):
         """Listen for UDP broadcasts from the Privileged Node"""
-        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp.bind(("", 9999))
-        print("[UDP] Listening for broadcasts on port 9999...")
-        
-        while self.running:
+        udp_port = 8001
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Allow multiple apps on same machine to bind
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
             try:
-                data, addr = udp.recvfrom(1024)
-                msg = json.loads(data.decode())
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except AttributeError:
+                pass
                 
-                if msg.get("role") == "privileged_peer":
-                    new_url = f"http://{msg['ip']}:{msg['port']}"
-                    
-                    # If not connected or connected to localhost default, switch
-                    if not self.token or "localhost" in self.tracker_url:
-                        print(f"[UDP] Found Tracker at {new_url}. Connecting...")
+        # Bind to all interfaces
+        sock.bind(("", udp_port))
+        
+        while True:
+            try:
+                data, addr = sock.recvfrom(1024)
+                msg = json.loads(data.decode())
+                if msg.get("action") == "tracker_presence":
+                    new_url = msg.get("tracker_url")
+                    if new_url and new_url != self.tracker_url:
+                        logging.info(f"Discovered new Tracker via UDP at {new_url}")
                         self.tracker_url = new_url
+                        # Re-join network
                         self.join_network()
             except Exception as e:
-                print(f"[UDP] Error: {e}")
-                time.sleep(1)
-
-
+                logging.error(f"UDP listener error: {e}")
+                time.sleep(2)
 
     def join_network(self) -> bool:
         """Register with the tracker"""
+        url = f"{self.tracker_url}/join"
+        data = {
+            "peer_id": self.peer_id,
+            "host": self.host,
+            "port": self.port,
+            "status": "active",
+            "public_key": self.public_key
+        }
         try:
-            payload = {
-                "peer_id": self.peer_id,
-                "host": self.host,
-                "port": self.port,
-                "status": "active"
-            }
-            res = requests.post(f"{self.tracker_url}/join", json=payload)
-            if res.status_code == 200:
-                data = res.json()
-                self.token = data.get("token")
+            response = requests.post(url, json=data, timeout=5)
+            if response.status_code == 200:
+                logging.info(f"Joined network successfully. Configured port: {self.port}")
                 return True
-            else:
-                print(f"Failed to join: {res.text}")
-                return False
-        except Exception as e:
-            print(f"Connection error: {e}")
+            logging.error(f"Join failed: {response.text}")
+            return False
+        except requests.RequestException as e:
+            logging.error(f"Could not connect to tracker: {e}")
             return False
 
     def get_metadata(self, file_stem: str) -> Optional[dict]:
@@ -398,50 +427,77 @@ class PeerClient:
         """
         Manually push an entire file (metadata + all chunks) to another peer via TCP
         """
+        # 1. Send Metadata
+        meta_path = BASE_DIR / "storage" / "metadata" / f"{file_stem}.json"
+        
+        # Load meta to know how many chunks
         try:
-            # 1. Send Metadata
-            meta_path = STORAGE_PATH / "metadata" / f"{file_stem}.json"
-            if not meta_path.exists():
-                return "Metadata file not found"
-            
-            with open(meta_path, "r") as f:
-                meta = json.load(f)
-            
-            print(f"[TCP] Pushing Metadata: {file_stem}")
-            header = {"packet_type": "metadata", "file_stem": file_stem}
-            success, msg = send_tcp_packet(target_ip, target_port, header, meta_path)
-            if not success:
-                return f"Failed to send metadata: {msg}"
-            
-            # 2. Send Chunks
-            total_chunks = meta['total_chunks']
-            sent_count = 0
-            
-            for i in range(total_chunks):
-                chunk_name = f"{file_stem}_chunk_{i}"
-                chunk_path = STORAGE_PATH / "chunks" / chunk_name
-                # Fallback check
-                if not chunk_path.exists():
-                    chunk_path = STORAGE_PATH / "received_chunks" / chunk_name
-                
-                if not chunk_path.exists():
-                    return f"Chunk {i} not found locally"
-
-                # Send Chunk Packet
-                header = {
-                    "packet_type": "chunk", 
-                    "file_stem": file_stem, 
-                    "chunk_index": i
-                }
-                success, msg = send_tcp_packet(target_ip, target_port, header, chunk_path)
-                if not success:
-                    return f"Stopped at chunk {i}: {msg}"
-                sent_count += 1
-                
-            return f"Success! Sent metadata + {sent_count} chunks."
-
+            with open(meta_path, 'r') as f:
+                meta_json = json.load(f)
         except Exception as e:
-            return f"Error: {e}"
+            return False, f"Could not read metadata for {file_stem}: {e}"
+
+        meta_header = {
+            "packet_type": "metadata",
+            "file_stem": file_stem
+        }
+        success, msg = send_tcp_packet(target_ip, target_port, meta_header, meta_path)
+        if not success:
+             return False, f"Failed to send metadata: {msg}"
+        
+        # 2. Send Chunks
+        total_chunks = meta_json.get("total_chunks", 0)
+        chunks_dir = BASE_DIR / "storage" / "chunks"
+
+        for i in range(total_chunks):
+            chunk_name = f"{file_stem}_chunk_{i}"
+            chunk_path = chunks_dir / chunk_name
+            
+            chunk_header = {
+                "packet_type": "chunk",
+                "file_stem": file_stem,
+                "chunk_index": i
+            }
+            c_success, c_msg = send_tcp_packet(target_ip, target_port, chunk_header, chunk_path)
+            if not c_success:
+                return False, f"Failed to send chunk {i}: {c_msg}"
+                
+        return True, "File pushed successfully"
+
+    def submit_assignment_tcp(self, target_ip: str, target_port: int, file_path: Path) -> tuple[bool, str]:
+        """
+        Signs the assignment file and submits it to the Privileged Node via TCP.
+        Returns (success, message)
+        """
+        try:
+            if not file_path.exists():
+                return False, f"File not found: {file_path}"
+                
+            # Read file data to sign
+            with open(file_path, "rb") as f:
+                data = f.read()
+                
+            from security.crypto import sign_data
+            signature = sign_data(self.private_key, data)
+            
+            file_stem = file_path.stem
+            original_name = file_path.name
+            
+            assignment_header = {
+                "packet_type": "assignment",
+                "file_stem": file_stem,
+                "original_name": original_name,
+                "peer_id": self.peer_id,
+                "signature": signature
+            }
+            
+            success, msg = send_tcp_packet(target_ip, target_port, assignment_header, file_path)
+            return success, msg
+            
+        except Exception as e:
+            msg = f"Failed to submit assignment: {e}"
+            logging.error(msg)
+            return False, msg
 
 if __name__ == "__main__":
     pass

@@ -8,15 +8,23 @@ from pydantic import BaseModel
 
 import socket
 import logging
-from pathlib import Path
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+import sys
+
+# Hack to allow importing from parent dir if run directly
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
+
+# Import security modules
+from security.auth import generate_token
+from security.hashing import sha256
+from security.crypto import load_or_generate_keys
+from tcp_handler import TCPServer
 
 # Configuration Constants
 CHUNK_SIZE = 1024 * 512  # 512 KB
 # Resolve STORAGE_DIR relative to this script:
 # privileged_peer/server.py -> parent(privileged_peer) -> parent(Network) -> storage
-BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_PATH = BASE_DIR / "storage"
 STORAGE_DIR = "storage" # Legacy/Unused mostly but kept for consts
 DEFAULT_TRACKER_PORT = 8000
@@ -27,26 +35,26 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def get_lan_ip():
     """Detect the local machine's LAN IP address"""
     try:
-        # Connect to a public DNS server (does not actually send data)
-        # to determine the most appropriate local interface IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
+        s.settimeout(0)
+        s.connect(('8.8.8.8', 1)) 
         ip = s.getsockname()[0]
         s.close()
         return ip
     except Exception:
-        return "127.0.0.1"
+        return '127.0.0.1' 
 
-def find_available_port(start_port: int, max_port: int = 65535) -> int:
+def find_available_port(start_port: int, max_port: int = 65535):
     """Find an available port starting from start_port"""
-    for port in range(start_port, max_port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
+    port = start_port
+    while port <= max_port:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(("", port))
                 return port
-            except OSError:
-                continue
-    raise RuntimeError("No available ports found")
+        except OSError:
+            port += 1
+    raise RuntimeError(f"No available ports found between {start_port} and {max_port}")
 
 # --- Shared Data Models ---
 
@@ -55,6 +63,7 @@ class PeerInfo(BaseModel):
     host: str
     port: int
     status: str = "active"
+    public_key: str = None
 
 class ChunkLocation(BaseModel):
     chunk_index: int
@@ -342,6 +351,16 @@ def broadcast_presence():
         except Exception as e:
             print(f"[UDP] Broadcast error: {e}")
             time.sleep(5)
+
+@app.on_event("startup")
+async def start_tcp_server():
+    try:
+        tcp_port = DEFAULT_TRACKER_PORT + 1
+        tcp_server = TCPServer(host="0.0.0.0", start_port=tcp_port)
+        actual_port = tcp_server.start()
+        print(f"[TCP] Server started on port {actual_port}")
+    except Exception as e:
+        print(f"[TCP] Failed to start TCP server: {e}")
 
 @app.on_event("startup")
 async def start_broadcaster():

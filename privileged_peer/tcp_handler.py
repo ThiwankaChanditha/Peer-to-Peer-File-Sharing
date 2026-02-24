@@ -100,6 +100,46 @@ class TCPServer:
                         f.write(data)
                 print(f"[TCP] Saved Metadata: {save_path}")
 
+            elif packet_type == "assignment":
+                peer_id = header.get("peer_id")
+                signature_b64 = header.get("signature")
+                original_name = header.get("original_name")
+                
+                # We need to look up the public key from the server's registry
+                # This requires importing the server registry, but since it's a global we can try to access it
+                from server import approved_peers
+                
+                peer_info = approved_peers.get(peer_id)
+                public_key = peer_info.public_key if peer_info else None
+                
+                if not public_key:
+                    logger.error(f"Cannot verify assignment: Public key for {peer_id} not found.")
+                    return
+                
+                # Receive file into memory for verification
+                file_data = b''
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    file_data += data
+                    
+                # Verify
+                from security.crypto import verify_signature
+                is_valid = verify_signature(public_key, file_data, signature_b64)
+                
+                if is_valid:
+                    save_dir = STORAGE_PATH / "assignments" / peer_id
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    save_path = save_dir / original_name
+                    
+                    with open(save_path, "wb") as f:
+                        f.write(file_data)
+                    
+                    logger.info(f"✅ Secure Assignment Verified and Saved: {save_path}")
+                else:
+                    logger.error(f"❌ Signature Verification Failed for {original_name} from {peer_id}")
+
             else:
                 # Default: Chunk
                 chunk_index = header.get("chunk_index")

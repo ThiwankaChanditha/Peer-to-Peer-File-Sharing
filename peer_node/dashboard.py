@@ -231,6 +231,44 @@ with st.expander("Browse & Download", expanded=True):
     else:
         st.info("Library is empty. (Check connection or wait for uploads)")
 
+with st.expander("📝 Assignment Submission", expanded=False):
+    st.markdown("Submit assignments securely to the Privileged Node (Tracker) with RSA Signature.")
+    uploaded_assignment = st.file_uploader("Upload Assignment File", key="assignment_upload")
+    if uploaded_assignment:
+        if st.button("Sign & Submit", key="submit_assignment_btn", type="primary"):
+            # Temporarily save uploaded file
+            temp_dir = Path("..") / "temp_uploads"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            orig_name = uploaded_assignment.name
+            safe_name = orig_name.replace(" ", "_").replace("/", "")
+            temp_path = temp_dir / safe_name
+            
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_assignment.read())
+                
+            # Submit via TCP to the Tracker
+            # Tracker runs HTTP on DEFAULT_TRACKER_PORT, TCP on PORT + 1
+            tracker_parts = client.tracker_url.replace("http://", "").replace("https://", "").split(":")
+            tracker_ip = tracker_parts[0]
+            tracker_http_port = int(tracker_parts[1]) if len(tracker_parts) > 1 else DEFAULT_TRACKER_PORT
+            tracker_tcp_port = tracker_http_port + 1
+            
+            with st.spinner("Signing and sending over TCP..."):
+                success, msg = client.submit_assignment_tcp(tracker_ip, tracker_tcp_port, temp_path)
+                if success:
+                    st.success(f"Assignment '{orig_name}' safely submitted & signed!")
+                    st.balloons()
+                else:
+                    st.error(f"Failed to submit: {msg}")
+                    
+            # Cleanup temp file
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
 
 st.header("Advanced Actions")
 with st.expander("Manual Download via ID"):

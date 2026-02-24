@@ -18,7 +18,7 @@ if 'files' not in st.session_state:
 
 st.title("Network Admin Console")
 
-page = st.sidebar.selectbox("Navigation", ["Publish New File", "Connected Peers"])
+page = st.sidebar.selectbox("Navigation", ["Publish New File", "Connected Peers", "Submissions"])
 
 # Page 1: Upload Files
 if page == "Publish New File":
@@ -240,3 +240,47 @@ elif page == "Connected Peers":
 
     # Manual Add (Simulated via Client logic really, but here for Admin override?)
 
+# Page 3: Submissions
+elif page == "Submissions":
+    st.header("📥 Secure Assignment Submissions")
+
+    st.markdown(
+        """
+        Assignments securely submitted by Peer Nodes.  
+        Each file here has passed RSA Signature verification for:
+
+        - **Authenticity**   
+        - **Integrity**   
+        """
+    )
+    assignments_dir = STORAGE_PATH / "assignments"
+
+    if not assignments_dir.exists():
+        st.info("No assignments received yet.")
+    else:
+        peer_dirs = [d for d in assignments_dir.iterdir() if d.is_dir()]
+        if not peer_dirs:
+            st.info("No assignments received yet.")
+        else:
+            for pdir in peer_dirs:
+                peer_id = pdir.name
+                files = list(pdir.iterdir())
+                if not files:
+                    continue
+                with st.expander(f"👤 {peer_id} ({len(files)} submissions)"):
+                    for file_path in files:
+                        col1, col2, col3 = st.columns([3, 2, 1])
+                        with col1:
+                            st.markdown(f"**{file_path.name}**")
+                        with col2:
+                            # Already verified by tcp_handler
+                            st.success("✅ Verified")
+                        with col3:
+                            with open(file_path, "rb") as assign_file:
+                                st.download_button(
+                                    label="Download",
+                                    data=assign_file.read(),
+                                    file_name=file_path.name,
+                                    mime="application/octet-stream",
+                                    key=f"dl_{peer_id}_{file_path.name}"
+                                )
