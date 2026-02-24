@@ -1,0 +1,3 @@
+Metadata saved: E:\NETWORK\Peer-to-Peer-File-Sharing\storage\metadata\Vectordb_By_Hand_Final_Blank.json
+Saved correctly to E:\NETWORK\Peer-to-Peer-File-Sharing\storage\metadata\Vectordb_By_Hand_Final_Blank.json
+Exists? True

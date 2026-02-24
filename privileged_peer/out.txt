@@ -1,0 +1,6 @@
+STORAGE_PATH is E:\NETWORK\Peer-to-Peer-File-Sharing\storage
+Files from tracker: 2
+Checking E:\NETWORK\Peer-to-Peer-File-Sharing\storage\metadata\Network Project - Week 04.json...
+Exists: False
+Checking E:\NETWORK\Peer-to-Peer-File-Sharing\storage\metadata\Net&SysAdmin.json...
+Exists: True

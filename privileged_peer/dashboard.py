@@ -9,6 +9,38 @@ from chunker import chunk_file
 from metadata import save_metadata
 from config import DEFAULT_TRACKER_PORT
 from tcp_handler import send_tcp_packet, STORAGE_PATH
+import socket
+
+def get_lan_ip():
+    """Detect the local machine's physical LAN IP address"""
+    try:
+        host_name = socket.gethostname()
+        ip_addresses = socket.gethostbyname_ex(host_name)[2]
+        
+        valid_ips = []
+        for ip in ip_addresses:
+            if ip.startswith("127."): continue
+            if ip.startswith("169.254."): continue
+            if ip.startswith("172."): continue  # Docker/WSL/Hyper-V
+            if ip.startswith("192.168.56."): continue # VirtualBox Host-Only
+            valid_ips.append(ip)
+            
+        if valid_ips:
+            # Prefer typical home router subnets
+            for ip in valid_ips:
+                if ip.startswith("192.168.") or ip.startswith("10."):
+                    return ip
+            return valid_ips[0]
+            
+        # Offline fallback: dummy local connection to force OS to choose an interface
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0)
+        s.connect(('192.168.1.1', 1)) 
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
 
 SERVER_URL = f"http://localhost:{DEFAULT_TRACKER_PORT}"
 
@@ -17,6 +49,7 @@ if 'files' not in st.session_state:
     st.session_state.files = {}
 
 st.title("Network Admin Console")
+st.sidebar.markdown(f"**Tracker IP:** `{get_lan_ip()}:{DEFAULT_TRACKER_PORT}`")
 
 page = st.sidebar.selectbox("Navigation", ["Publish New File", "Connected Peers", "Submissions"])
 
@@ -32,7 +65,7 @@ if page == "Publish New File":
         # This dashboard runs in privileged_peer/
         
         # Temp save
-        temp_dir = Path("temp_uploads")
+        temp_dir = BASE_DIR / "temp_uploads"
         temp_dir.mkdir(exist_ok=True)
         file_path = temp_dir / uploaded.name
         
@@ -164,7 +197,14 @@ if page == "Publish New File":
                                                 # 1. Send Metadata
                                                 meta_path = STORAGE_PATH / "metadata" / f"{f['stem']}.json"
                                                 if not meta_path.exists():
-                                                    st.error("Metadata not found locally.")
+                                                    # Try glob fallback
+                                                    for m in (STORAGE_PATH / "metadata").glob("*.json"):
+                                                        if m.stem == f['stem']:
+                                                            meta_path = m
+                                                            break
+                                                
+                                                if not meta_path.exists():
+                                                    st.error(f"Metadata not found locally for {f['stem']}.")
                                                     continue
                                                     
                                                 ok, msg = send_tcp_packet(target_ip, target_port, {"packet_type": "metadata", "file_stem": f['stem']}, meta_path)

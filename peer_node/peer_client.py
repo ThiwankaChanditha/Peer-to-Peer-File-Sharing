@@ -37,12 +37,30 @@ PEER_SAMPLE_SIZE = 5
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_lan_ip():
-    """Detect the local machine's LAN IP address"""
+    """Detect the local machine's physical LAN IP address"""
     try:
-        # Create a dummy socket to detect routing IP
+        host_name = socket.gethostname()
+        ip_addresses = socket.gethostbyname_ex(host_name)[2]
+        
+        valid_ips = []
+        for ip in ip_addresses:
+            if ip.startswith("127."): continue
+            if ip.startswith("169.254."): continue
+            if ip.startswith("172."): continue  # Docker/WSL/Hyper-V
+            if ip.startswith("192.168.56."): continue # VirtualBox Host-Only
+            valid_ips.append(ip)
+            
+        if valid_ips:
+            # Prefer typical home router subnets
+            for ip in valid_ips:
+                if ip.startswith("192.168.") or ip.startswith("10."):
+                    return ip
+            return valid_ips[0]
+            
+        # Offline fallback: dummy local connection to force OS to choose an interface
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0)
-        s.connect(('8.8.8.8', 1)) # Connect to a known external IP
+        s.connect(('192.168.1.1', 1)) 
         ip = s.getsockname()[0]
         s.close()
         return ip

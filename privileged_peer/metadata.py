@@ -33,10 +33,20 @@ def save_metadata(chunk_info: dict):
     # Save metadata with file stem name (without problematic characters)
     safe_name = chunk_info['file_stem'].replace('/', '_').replace('\\', '_')
     metadata_file = STORAGE_PATH / "metadata" / f"{safe_name}.json"
-    with open(metadata_file, "w", encoding='utf-8') as f:
-        json.dump(meta, f, indent=2)
     
-    print(f"Metadata saved: {metadata_file}")
+    print(f"\n[DEBUG METADATA] WRITING TO: {metadata_file.resolve()}\n")
+    try:
+        with open(metadata_file, "w", encoding='utf-8') as f:
+            json.dump(meta, f, indent=2)
+            
+        if not metadata_file.exists():
+            print("\n[CRITICAL DEBUB METADATA] FILE DOES NOT EXIST AFTER WRITE!\n")
+        else:
+            print(f"\n[DEBUG METADATA] Verification successful. File exists natively at {metadata_file.resolve()}\n")
+            
+    except Exception as exc:
+        print(f"\n[CRITICAL METADATA EXCEPTION] failed with exception {exc}\n")
+    
     return metadata_file
 
 def load_metadata(file_name: str):
