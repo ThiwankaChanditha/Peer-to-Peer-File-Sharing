@@ -498,16 +498,19 @@ class PeerClient:
         }
         success, msg = send_tcp_packet(target_ip, target_port, meta_header, meta_path)
         if not success:
-             return False, f"Failed to send metadata: {msg}"
+            return False, f"Failed to send metadata: {msg}"
         
         # 2. Send Chunks
         total_chunks = meta_json.get("total_chunks", 0)
-        chunks_dir = BASE_DIR / "storage" / "chunks"
 
         for i in range(total_chunks):
             chunk_name = f"{file_stem}_chunk_{i}"
-            chunk_path = chunks_dir / chunk_name
-            
+
+            # Check storage/chunks first, then fall back to storage/received_chunks
+            chunk_path = BASE_DIR / "storage" / "chunks" / chunk_name
+            if not chunk_path.exists():
+                chunk_path = BASE_DIR / "storage" / "received_chunks" / chunk_name
+
             chunk_header = {
                 "packet_type": "chunk",
                 "file_stem": file_stem,
@@ -518,6 +521,25 @@ class PeerClient:
                 return False, f"Failed to send chunk {i}: {c_msg}"
                 
         return True, "File pushed successfully"
+
+    def reassemble_local_file(self, file_stem: str):
+        """Reassemble a file from locally stored received chunks"""
+        meta_path = STORAGE_PATH / "metadata" / f"{file_stem}.json"
+        try:
+            with open(meta_path, "r") as f:
+                metadata = json.load(f)
+        except Exception as e:
+            return False, f"Could not read metadata: {e}"
+
+        chunks = []
+        for i in range(metadata['total_chunks']):
+            chunk_name = f"{file_stem}_chunk_{i}"
+            chunks.append({"index": i, "filename": chunk_name})
+
+        ok = self.reassemble(file_stem, metadata, chunks)
+        if ok:
+            return True, "Reassembly successful"
+        return False, "Reassembly failed"
 
     def submit_assignment_tcp(self, target_ip: str, target_port: int, file_path: Path) -> tuple[bool, str]:
         """
