@@ -10,7 +10,7 @@ from metadata import save_metadata
 from config import DEFAULT_TRACKER_PORT
 from tcp_handler import send_tcp_packet, STORAGE_PATH
 import socket
-
+BASE_DIR = Path(__file__).resolve().parent.parent
 def get_lan_ip():
     """Detect the local machine's physical LAN IP address"""
     try:
@@ -323,4 +323,5 @@ elif page == "Submissions":
                                     file_name=file_path.name,
                                     mime="application/octet-stream",
                                     key=f"dl_{peer_id}_{file_path.name}"
+
                                 )
