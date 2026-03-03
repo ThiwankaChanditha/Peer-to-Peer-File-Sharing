@@ -1,25 +1,24 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import APIKeyHeader
 from pathlib import Path
-import json
-import secrets
+import json, time, asyncio, secrets
 from typing import Dict, List, Set, Optional
 from pydantic import BaseModel
 
-import socket
-import logging
-from pydantic import BaseModel
-import sys
-
-# Hack to allow importing from parent dir if run directly
+import os
+import socket, logging, sys
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 
-# Import security modules
-from security.auth import generate_token
+from security.auth import issue_token, validate_token, revoke_token
 from security.hashing import sha256
 from security.crypto import load_or_generate_keys
 from tcp_handler import TCPServer
+from shared.config import (
+    DEFAULT_TRACKER_PORT, STORAGE_DIR, get_lan_ip,
+    sanitize_stem, PeerInfo, FileMetadata, ChunkLocation, ChunkData
+)
 
 # Configuration Constants
 CHUNK_SIZE = 1024 * 512  # 512 KB
@@ -75,38 +74,20 @@ def find_available_port(start_port: int, max_port: int = 65535):
             port += 1
     raise RuntimeError(f"No available ports found between {start_port} and {max_port}")
 
-# --- Shared Data Models ---
+from shared.config import load_admin_key
+ADMIN_API_KEY = load_admin_key() or secrets.token_urlsafe(24)
+print(f"[SECURITY] Admin API Key: {ADMIN_API_KEY}") 
 
-class PeerInfo(BaseModel):
-    peer_id: str
-    host: str
-    port: int
-    status: str = "active"
-    public_key: Optional[str] = None
+_admin_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
-class ChunkLocation(BaseModel):
-    chunk_index: int
-    peer_ids: List[str]  # List of peer IDs that have this chunk
-
-class FileMetadata(BaseModel):
-    file_name: str
-    file_hash: str
-    total_chunks: int
-    file_size: int
-    mime_type: str = "application/octet-stream"
-
-class ChunkData(BaseModel):
-    index: int
-    hash: str
-    filename: str
-    size: int
-
+async def require_admin(key: str = Depends(_admin_header)):
+    if key != ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
 
 app = FastAPI(title="Privileged Peer Tracker")
 
 # Store approved peers: peer_id -> PeerInfo
 approved_peers: Dict[str, PeerInfo] = {}
-peer_tokens: Dict[str, str] = {}
 
 # track chunk locations: file_hash -> chunk_index -> Set[peer_id]
 chunk_locations: Dict[str, Dict[int, Set[str]]] = {}
@@ -143,16 +124,15 @@ async def startup_event():
 
 @app.post("/join")
 async def join(peer: PeerInfo):
-    """Register a peer with the tracker"""
+    peer.last_seen = time.time()
     if peer.peer_id in approved_peers:
-        # Update existing info
         approved_peers[peer.peer_id] = peer
-        return {"status": "rejoined", "token": peer_tokens[peer.peer_id]}
-    
-    token = generate_token()
+        # Re-issue token so the peer gets a fresh one
+        token = issue_token(peer.peer_id)
+        return {"status": "rejoined", "token": token}
+
+    token = issue_token(peer.peer_id)
     approved_peers[peer.peer_id] = peer
-    peer_tokens[peer.peer_id] = token
-    
     return {
         "status": "approved",
         "token": token,
@@ -165,59 +145,51 @@ class Announcement(BaseModel):
     chunk_index: int
 
 @app.post("/announce_chunk")
-async def announce_chunk_endpoint(announcement: Announcement, peer_id: str, token: str):
-    if peer_id not in approved_peers or peer_tokens.get(peer_id) != token:
+async def announce_chunk_endpoint(announcement: Announcement,
+                                   peer_id: str, token: str):
+    if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
     
-    file_id = announcement.file_stem
+    # Update last_seen
+    if peer_id in approved_peers:
+        approved_peers[peer_id].last_seen = time.time()
+
+    file_id = sanitize_stem(announcement.file_stem)   # ← sanitize here
     if file_id not in chunk_locations:
         chunk_locations[file_id] = {}
-    
-    if announcement.chunk_index not in chunk_locations[file_id]:
-        chunk_locations[file_id][announcement.chunk_index] = set()
-    
-    chunk_locations[file_id][announcement.chunk_index].add(peer_id)
+    chunk_locations[file_id].setdefault(announcement.chunk_index, set()).add(peer_id)
     return {"status": "acknowledged"}
 
 @app.get("/peers/{file_stem}/{chunk_index}")
-async def get_chunk_owners(file_stem: str, chunk_index: int, peer_id: str, token: str):
-    """Get list of peers that own a specific chunk"""
-    if peer_id not in approved_peers:
-        if peer_tokens.get(peer_id) != token:
-             raise HTTPException(status_code=403, detail="Unauthorized")
+async def get_chunk_owners(file_stem: str, chunk_index: int,
+                            peer_id: str, token: str):
+    if not validate_token(peer_id, token):
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
-    owners = set()
-    
-    # 1. Check if Tracker (Privileged Peer) has it
+    file_stem = sanitize_stem(file_stem)   # ← sanitize here
+    owners, result = set(), []
+
     tracker_path = STORAGE_PATH / "chunks" / f"{file_stem}_chunk_{chunk_index}"
     if tracker_path.exists():
         owners.add("privileged_peer")
-        
-    # 2. Check other peers
+
     if file_stem in chunk_locations and chunk_index in chunk_locations[file_stem]:
         owners.update(chunk_locations[file_stem][chunk_index])
-    
-    # Convert to PeerInfo list
-    result = []
+
     if "privileged_peer" in owners:
-        result.append({
-            "peer_id": "privileged_peer",
-            "host": get_lan_ip(),
-            "port": DEFAULT_TRACKER_PORT,
-            "type": "tracker"
-        })
+        result.append({"peer_id": "privileged_peer", "host": get_lan_ip(),
+                        "port": DEFAULT_TRACKER_PORT, "type": "tracker"})
         owners.discard("privileged_peer")
-        
-    for owner_id in owners:
-        if owner_id in approved_peers:
-            p = approved_peers[owner_id]
-            result.append(p.model_dump())
-            
+
+    for oid in owners:
+        if oid in approved_peers:
+            result.append(approved_peers[oid].model_dump())
+
     return {"owners": result}
 
 @app.get("/metadata/{file_stem}")
 async def get_metadata(file_stem: str, peer_id: str, token: str):
-    if peer_id not in approved_peers or peer_tokens.get(peer_id) != token:
+    if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
         
     print(f"[DEBUG] Request for metadata: {file_stem}")
@@ -252,7 +224,7 @@ async def get_metadata(file_stem: str, peer_id: str, token: str):
 
 @app.get("/chunk/{file_stem}/{chunk_index}")
 async def download_chunk(file_stem: str, chunk_index: int, peer_id: str, token: str):
-    if peer_id not in approved_peers or peer_tokens.get(peer_id) != token:
+    if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
         
     chunk_name = f"{file_stem}_chunk_{chunk_index}"
@@ -271,6 +243,14 @@ async def download_chunk(file_stem: str, chunk_index: int, peer_id: str, token: 
              raise HTTPException(status_code=404, detail="Chunk not found")
          
     return FileResponse(chunk_path)
+
+@app.get("/tracker_pubkey")
+async def tracker_pubkey():
+    """Allows peers to fetch and cache the tracker's public key (TOFU model)."""
+    key_path = BASE_DIR / "storage" / "tracker_public_key.pem"
+    if not key_path.exists():
+        raise HTTPException(status_code=404, detail="Key not generated yet")
+    return {"public_key": key_path.read_text()}
 
 @app.get("/files")
 async def list_files():
@@ -343,32 +323,40 @@ async def unregister_file(info: FileUnregistration):
     return {"status": "not_found", "message": "File not in registry"}
 
 @app.get("/admin/peers")
-async def get_all_peers():
-    """Endpoint for Dashboard to list peers"""
+async def get_all_peers(_: None = Depends(require_admin)):
     return [p.model_dump() for p in approved_peers.values()]
 
-# --- auto-discovery ---
 def broadcast_presence():
-    """Background thread to broadcast presence via UDP"""
     import time
+    from security.crypto import sign_data, load_or_generate_keys, serialize_public_key
+    
+    key_path = BASE_DIR / "storage" / "tracker_keys"
+    private_key, pub_key_obj = load_or_generate_keys(key_path)
+    pub_key_str = serialize_public_key(pub_key_obj)
+    
+    # Write public key to a well-known file so peers can be pre-seeded with it
+    (BASE_DIR / "storage").mkdir(parents=True, exist_ok=True)
+    (BASE_DIR / "storage" / "tracker_public_key.pem").write_text(pub_key_str)
+    
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    
-    port = 9999
-    message = json.dumps({
-        "role": "privileged_peer",
-        "ip": get_lan_ip(),
-        "port": DEFAULT_TRACKER_PORT
-    }).encode('utf-8')
-    
-    print(f"[UDP] Broadcasting presence on port {port}...")
-    
+
     while True:
         try:
-            udp_socket.sendto(message, ('<broadcast>', port))
+            payload = json.dumps({
+                "action": "tracker_presence",
+                "ip": get_lan_ip(),
+                "port": DEFAULT_TRACKER_PORT
+            })
+            signature = sign_data(private_key, payload.encode())
+            message = json.dumps({
+                "payload": payload,
+                "signature": signature
+            }).encode()
+            udp_socket.sendto(message, ("<broadcast>", 9999))
             time.sleep(5)
         except Exception as e:
-            print(f"[UDP] Broadcast error: {e}")
+            logging.error(f"[UDP] Broadcast error: {e}")
             time.sleep(5)
 
 @app.on_event("startup")
@@ -397,6 +385,28 @@ async def start_broadcaster():
     import threading
     t = threading.Thread(target=broadcast_presence, daemon=True)
     t.start()
+
+@app.on_event("startup")
+async def start_peer_cleanup():
+    async def _cleanup():
+        while True:
+            await asyncio.sleep(60)
+            cutoff = time.time() - 300   # 5 minutes — gives peers time to start up and send heartbeats
+            stale = [pid for pid, p in approved_peers.items()
+                     if p.last_seen > 0 and p.last_seen < cutoff]
+            for pid in stale:
+                logging.info(f"[CLEANUP] Removing stale peer: {pid}")
+                del approved_peers[pid]
+                revoke_token(pid)
+    asyncio.create_task(_cleanup())
+
+@app.post("/heartbeat")
+async def heartbeat(peer_id: str, token: str):
+    if not validate_token(peer_id, token):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    if peer_id in approved_peers:
+        approved_peers[peer_id].last_seen = time.time()
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

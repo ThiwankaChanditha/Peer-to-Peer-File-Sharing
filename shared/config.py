@@ -1,52 +1,81 @@
+# shared/config.py
 import socket
+import re
 import logging
 from pathlib import Path
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Optional
 
-# Configuration Constants
-CHUNK_SIZE = 1024 * 512  # 512 KB
+CHUNK_SIZE = 1024 * 512          
 STORAGE_DIR = "storage"
 DEFAULT_TRACKER_PORT = 8000
+MAX_CLUSTER_SIZE = 20
+PEER_SAMPLE_SIZE = 5
+MAX_ASSIGNMENT_SIZE = 50 * 1024 * 1024  
+BOOTSTRAP_PEERS: List[str] = []          
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-def get_lan_ip():
-    """Detect the local machine's LAN IP address"""
+def get_lan_ip() -> str:
     try:
-        # Connect to a public DNS server (does not actually send data)
-        # to determine the most appropriate local interface IP
+        host_name = socket.gethostname()
+        ip_addresses = socket.gethostbyname_ex(host_name)[2]
+        valid = [
+            ip for ip in ip_addresses
+            if not ip.startswith(("127.", "169.254.", "172.", "192.168.56."))
+        ]
+        for ip in valid:
+            if ip.startswith(("192.168.", "10.")):
+                return ip
+        if valid:
+            return valid[0]
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
+        s.settimeout(0)
+        s.connect(("192.168.1.1", 1))
         ip = s.getsockname()[0]
         s.close()
         return ip
     except Exception:
         return "127.0.0.1"
 
-def find_available_port(start_port: int, max_port: int = 65535) -> int:
-    """Find an available port starting from start_port"""
+
+def find_available_port(start_port: int, max_port: int = 65535,
+                         host: str = "") -> int:
     for port in range(start_port, max_port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("", port))
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((host, port))
                 return port
-            except OSError:
-                continue
+        except OSError:
+            continue
     raise RuntimeError("No available ports found")
 
-# --- Shared Data Models ---
+
+def sanitize_stem(stem: str) -> str:
+    """
+    Strip path components and allow only safe characters.
+    Call this on EVERY file_stem received from the network
+    before touching the filesystem.
+    """
+    name = Path(stem).name          
+    return re.sub(r"[^\w\-.]", "_", name)
 
 class PeerInfo(BaseModel):
     peer_id: str
     host: str
     port: int
     status: str = "active"
+    public_key: Optional[str] = None
+    last_seen: float = 0.0          
+
 
 class ChunkLocation(BaseModel):
     chunk_index: int
-    peer_ids: List[str]  # List of peer IDs that have this chunk
+    peer_ids: List[str]
+
 
 class FileMetadata(BaseModel):
     file_name: str
@@ -55,9 +84,33 @@ class FileMetadata(BaseModel):
     file_size: int
     mime_type: str = "application/octet-stream"
 
+
 class ChunkData(BaseModel):
     index: int
     hash: str
     filename: str
     size: int
 
+import os
+
+def load_admin_key() -> str:
+    """
+    Load admin key from environment first, then fall back to
+    admin_key.txt at the project root.
+    """
+    import os
+    
+    # 1. Environment variable takes priority
+    key = os.environ.get("ADMIN_API_KEY", "")
+    if key:
+        return key
+    
+    # 2. Fall back to admin_key.txt at project root
+    config_path = Path(__file__).resolve().parent.parent / "admin_key.txt"
+    if config_path.exists():
+        key = config_path.read_text().strip()
+        if key:
+            return key
+    
+    logging.warning("No ADMIN_API_KEY found in environment or admin_key.txt")
+    return ""

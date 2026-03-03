@@ -4,6 +4,10 @@ import json
 import struct
 import logging
 from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from shared.config import sanitize_stem
 
 # Resolve STORAGE_PATH relative to this script:
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -79,7 +83,7 @@ class TCPServer:
             header = json.loads(header_json.decode('utf-8'))
             
             packet_type = header.get("packet_type", "chunk") # Default to chunk for backward compatibility
-            file_stem = header.get("file_stem")
+            file_stem = sanitize_stem(header.get("file_stem", "unknown"))
             
             logger.info(f"Receiving TCP Packet: {packet_type} for {file_stem}")
             print(f"[TCP] Receiving {packet_type}: {file_stem}")

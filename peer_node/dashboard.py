@@ -4,6 +4,10 @@ import requests
 import json
 from pathlib import Path
 import socket
+
+from shared.config import load_admin_key
+ADMIN_KEY = load_admin_key()
+
 import logging
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -13,62 +17,11 @@ from peer_client import PeerClient
 # Hack to allow importing from parent dir if run directly
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Configuration Constants
-CHUNK_SIZE = 1024 * 512  # 512 KB
-STORAGE_DIR = "storage"
-DEFAULT_TRACKER_PORT = 8000
-
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def get_lan_ip():
-    """Detect the local machine's LAN IP address"""
-    try:
-        # Connect to a public DNS server (does not actually send data)
-        # to determine the most appropriate local interface IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-def find_available_port(start_port: int, max_port: int = 65535) -> int:
-    """Find an available port starting from start_port"""
-    for port in range(start_port, max_port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError("No available ports found")
-
-# --- Shared Data Models ---
-
-class PeerInfo(BaseModel):
-    peer_id: str
-    host: str
-    port: int
-    status: str = "active"
-
-class ChunkLocation(BaseModel):
-    chunk_index: int
-    peer_ids: List[str]  # List of peer IDs that have this chunk
-
-class FileMetadata(BaseModel):
-    file_name: str
-    file_hash: str
-    total_chunks: int
-    file_size: int
-    mime_type: str = "application/octet-stream"
-
-class ChunkData(BaseModel):
-    index: int
-    hash: str
-    filename: str
-    size: int
+from shared.config import (
+    CHUNK_SIZE, DEFAULT_TRACKER_PORT, get_lan_ip,
+    find_available_port, sanitize_stem,
+    PeerInfo, ChunkLocation, FileMetadata, ChunkData
+)
 
 
 # Initialize PeerClient in session state
@@ -139,8 +92,10 @@ st.sidebar.subheader("Neighbors (Peers)")
 # We should probably add a get_peers method to client or just call the API.
 try:
     # Quick hack to get peers from tracker public endpoint
+    # The X-Admin-Key is already being imported as ADMIN_KEY at the top
     r = requests.get(
         f"{client.tracker_url}/admin/peers",
+        headers={"X-Admin-Key": ADMIN_KEY},
         timeout=2
     )
 

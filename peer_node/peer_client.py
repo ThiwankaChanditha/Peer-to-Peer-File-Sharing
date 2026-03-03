@@ -1,118 +1,37 @@
-import requests
-import threading
-import time
-import hashlib
-import json
-import random
+# peer_node/peer_client.py — top of file
+import requests, threading, time, hashlib, json, random, socket, logging, sys
 from pathlib import Path
 from typing import List, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Local imports
-import socket
-import logging
-from pathlib import Path
-from pydantic import BaseModel
-import sys
-
-# Hack to allow importing from parent dir if run directly
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 
-# Import security modules
-from security.auth import generate_token
 from security.hashing import sha256
 from security.crypto import load_or_generate_keys
+from shared.config import (
+    CHUNK_SIZE, DEFAULT_TRACKER_PORT, MAX_CLUSTER_SIZE, PEER_SAMPLE_SIZE,
+    get_lan_ip, find_available_port, sanitize_stem,
+    PeerInfo, ChunkLocation, FileMetadata, ChunkData
+)
 
-# Configuration Constants
-CHUNK_SIZE = 1024 * 512  # 512 KB
-# Resolve STORAGE_DIR relative to this script:
-# peer_node/peer_client.py -> parent(peer_node) -> parent(Network) -> storage
 STORAGE_PATH = BASE_DIR / "storage"
-STORAGE_DIR = "storage" # Legacy/Unused mostly but kept for consts
-DEFAULT_TRACKER_PORT = 8000
-MAX_CLUSTER_SIZE = 20
-PEER_SAMPLE_SIZE = 5
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def get_lan_ip():
-    """Detect the local machine's physical LAN IP address"""
-    try:
-        host_name = socket.gethostname()
-        ip_addresses = socket.gethostbyname_ex(host_name)[2]
-        
-        valid_ips = []
-        for ip in ip_addresses:
-            if ip.startswith("127."): continue
-            if ip.startswith("169.254."): continue
-            if ip.startswith("172."): continue  # Docker/WSL/Hyper-V
-            if ip.startswith("192.168.56."): continue # VirtualBox Host-Only
-            valid_ips.append(ip)
-            
-        if valid_ips:
-            # Prefer typical home router subnets
-            for ip in valid_ips:
-                if ip.startswith("192.168.") or ip.startswith("10."):
-                    return ip
-            return valid_ips[0]
-            
-        # Offline fallback: dummy local connection to force OS to choose an interface
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0)
-        s.connect(('192.168.1.1', 1)) 
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return '127.0.0.1' # Fallback to localhost
-
-def find_available_port(start_port: int, max_port: int = 65535, host: str = "") -> int:
-    """Find an available port starting from start_port"""
-    port = start_port
-    while port <= max_port:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind((host, port))
-                return port
-        except OSError:
-            port += 1
-    raise RuntimeError(f"No available ports found between {start_port} and {max_port}")
-
-# --- Shared Data Models ---
-
-class PeerInfo(BaseModel):
-    peer_id: str
-    host: str
-    port: int
-    status: str = "active"
-    public_key: Optional[str] = None
-
-class ChunkLocation(BaseModel):
-    chunk_index: int
-    peer_ids: List[str]  # List of peer IDs that have this chunk
-
-class FileMetadata(BaseModel):
-    file_name: str
-    file_hash: str
-    total_chunks: int
-    file_size: int
-    mime_type: str = "application/octet-stream"
-
-class ChunkData(BaseModel):
-    index: int
-    hash: str
-    filename: str
-    size: int
-
-
 from peer_server import start_peer_server
 from tcp_handler import TCPServer, send_tcp_packet
 
 class PeerClient:
     def __init__(self, tracker_url: str = f"http://localhost:{DEFAULT_TRACKER_PORT}"):
         self.tracker_url = tracker_url
-        self.peer_id = f"peer_{int(time.time())}"
+        self.peer_storage_path = BASE_DIR / "storage" / "peer_data" / "this_peer"
+        self.private_key, self.public_key_obj = load_or_generate_keys(self.peer_storage_path)
+
+        from security.crypto import serialize_public_key
+        import hashlib as _hl
+        self.public_key = serialize_public_key(self.public_key_obj)
+        self.peer_id = "peer_" + _hl.sha256(self.public_key.encode()).hexdigest()[:16]
         self.host = get_lan_ip()
         
         # Find contiguous ports for HTTP (port) and TCP (port + 1)
@@ -147,7 +66,7 @@ class PeerClient:
         from security.crypto import serialize_public_key
         self.public_key = serialize_public_key(self.public_key_obj)
 
-        self.token = generate_token()
+        self.token = None
         self.active_peers = []
         
         # cluster: dict mapping peer_id -> latency (ms)
@@ -181,6 +100,20 @@ class PeerClient:
             return (time.time() - start) * 1000 # ms
         except Exception:
             return float('inf')
+
+    def _heartbeat_loop(self):
+        """Send a heartbeat to the tracker every 30 seconds."""
+        while True:
+            time.sleep(30)
+            if self.token:
+                try:
+                    requests.post(
+                        f"{self.tracker_url}/heartbeat",
+                        params={"peer_id": self.peer_id, "token": self.token},
+                        timeout=5
+                    )
+                except Exception:
+                    pass
 
     def update_cluster(self):
         """
@@ -222,46 +155,54 @@ class PeerClient:
         logging.debug(f"Updated Cluster (Size: {len(self.cluster)}): {self.cluster}")
 
     def listen_for_broadcasts(self):
-        """Listen for UDP broadcasts from the Privileged Node"""
-        udp_port = 8001
+        udp_port = 9999
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Allow multiple apps on same machine to bind
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, "SO_REUSEPORT"):
-            try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            except AttributeError:
-                pass
-                
-        # Bind to all interfaces
+            try: sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except AttributeError: pass
         sock.bind(("", udp_port))
-        
+
+        # Load tracker public key if we have it pre-seeded
+        tracker_pub_key_path = BASE_DIR / "storage" / "tracker_public_key.pem"
+
         while True:
             try:
-                data, addr = sock.recvfrom(1024)
-                msg = json.loads(data.decode())
+                data, addr = sock.recvfrom(4096)
+                outer = json.loads(data.decode())
+
+                payload_str = outer.get("payload")
+                signature   = outer.get("signature")
+
+                # ── Verify if we have the tracker public key ───
+                if tracker_pub_key_path.exists() and signature:
+                    from security.crypto import verify_signature
+                    pub_key = tracker_pub_key_path.read_text()
+                    if not verify_signature(pub_key, payload_str.encode(), signature):
+                        logging.warning(f"[UDP] Rejected unsigned/forged broadcast from {addr}")
+                        continue
+                # If we don't have the key yet, trust first broadcast (TOFU)
+                # and save the key from the tracker's /tracker_pubkey endpoint
+                elif not tracker_pub_key_path.exists():
+                    logging.warning("[UDP] No tracker public key — trusting first broadcast (TOFU)")
+
+                msg = json.loads(payload_str)
                 if msg.get("action") == "tracker_presence":
-                    # Tracker may send 'tracker_url' directly, or 'ip' and 'port'
-                    new_url = msg.get("tracker_url")
-                    if not new_url:
-                        # Fallback to older broadcast format
-                        ip = msg.get("ip")
-                        port = msg.get("port", DEFAULT_TRACKER_PORT)
-                        if ip:
-                            new_url = f"http://{ip}:{port}"
-                            
-                    if new_url:
-                        # Ensure it's got http:// and a port
-                        if not new_url.startswith("http"):
-                            new_url = f"http://{new_url}"
-                        if len(new_url.split(":")) == 2: # http://ip
-                            new_url = f"{new_url}:{DEFAULT_TRACKER_PORT}"
-                            
-                        if new_url != self.tracker_url:
-                            logging.info(f"Discovered new Tracker via UDP at {new_url}")
-                            self.tracker_url = new_url
-                            # Re-join network
-                            self.join_network()
+                    ip   = msg.get("ip")
+                    port = msg.get("port", DEFAULT_TRACKER_PORT)
+                    new_url = f"http://{ip}:{port}"
+                    if new_url != self.tracker_url:
+                        logging.info(f"Discovered tracker at {new_url}")
+                        self.tracker_url = new_url
+                        # Cache the key for future verification
+                        if not tracker_pub_key_path.exists():
+                            try:
+                                r = requests.get(f"{new_url}/tracker_pubkey", timeout=3)
+                                if r.status_code == 200:
+                                    tracker_pub_key_path.write_text(r.json()["public_key"])
+                            except Exception:
+                                pass
+                        self.join_network()
             except Exception as e:
                 logging.error(f"UDP listener error: {e}")
                 time.sleep(2)
@@ -304,15 +245,19 @@ class PeerClient:
             return None
 
     def get_active_peers(self) -> List[dict]:
-        """Fetch list of all active peers from the tracker"""
         try:
-            # We use the admin endpoint which currently returns all peers
-            res = requests.get(f"{self.tracker_url}/admin/peers", timeout=5)
+            from shared.config import load_admin_key
+            admin_key = load_admin_key()
+            res = requests.get(
+                f"{self.tracker_url}/admin/peers",
+                headers={"X-Admin-Key": admin_key},
+                timeout=5
+            )
             if res.status_code == 200:
                 return res.json()
             return []
         except Exception as e:
-            print(f"Error fetching peers: {e}")
+            logging.error(f"Error fetching peers: {e}")
             return []
 
     def list_files(self) -> List[dict]:
@@ -341,104 +286,74 @@ class PeerClient:
             return []
 
     def download_file(self, file_stem: str):
+        file_stem = sanitize_stem(file_stem)
         metadata = self.get_metadata(file_stem)
         if not metadata:
             return "Metadata not found"
 
         local_storage = STORAGE_PATH / "received_chunks"
         local_storage.mkdir(parents=True, exist_ok=True)
-        
-        # Save metadata to local storage so we can re-share it later
+
         meta_dir = STORAGE_PATH / "metadata"
         meta_dir.mkdir(parents=True, exist_ok=True)
-        meta_path = meta_dir / f"{file_stem}.json"
-        
         try:
-            with open(meta_path, "w") as f:
+            with open(meta_dir / f"{file_stem}.json", "w") as f:
                 json.dump(metadata, f, indent=2)
         except Exception as e:
-            print(f"[WARN] Failed to save metadata locally: {e}")
+            logging.warning(f"Failed to save metadata locally: {e}")
 
-        downloaded_chunks = []
+        missing = []
 
-        for i in range(metadata['total_chunks']):
-            success = False
-            
-            # Check if we already have this chunk locally
+        def fetch_chunk(i: int) -> bool:
             chunk_name = f"{file_stem}_chunk_{i}"
             chunk_path = local_storage / chunk_name
+
+            # Already have it locally?
             if chunk_path.exists():
                 with open(chunk_path, "rb") as f:
-                    chunk_data = f.read()
-                if hashlib.sha256(chunk_data).hexdigest() == metadata['chunks'][i]['hash']:
-                    print(f"[DEBUG] Found chunk locally: {chunk_name}")
-                    downloaded_chunks.append({"index": i, "filename": chunk_name})
-                    # Announce it just in case we haven't yet
+                    data = f.read()
+                if hashlib.sha256(data).hexdigest() == metadata["chunks"][i]["hash"]:
                     self.announce_chunk(file_stem, i)
-                    success = True
-                    continue # Skip to next chunk
-            
-            # If not found locally, try peers
-            peers = self.find_chunk_owners(file_stem, i)
-            
-            # SORT PEERS BY CLUSTER LATENCY
-            # Peers not in cluster get penalty
-            peers.sort(key=lambda p: self.cluster.get(p['peer_id'], 9999))
-            
-            for peer in peers:
-                if peer['peer_id'] == self.peer_id: continue
+                return True
 
-                target_host = peer['host']
-                target_port = peer['port']
-                
-                from urllib.parse import quote
-                safe_stem = quote(file_stem)
-                
-                url = f"http://{target_host}:{target_port}/chunk/{safe_stem}/{i}"
-                
+            peers = self.find_chunk_owners(file_stem, i)
+            peers.sort(key=lambda p: self.cluster.get(p["peer_id"], 9999))
+
+            for peer in peers:
+                if peer["peer_id"] == self.peer_id:
+                    continue
+                url = f"http://{peer['host']}:{peer['port']}/chunk/{file_stem}/{i}"
                 try:
-                    params = {}
-                    if peer.get('type') == 'tracker':
-                         params = {"peer_id": self.peer_id, "token": self.token}
-                    
+                    params = {"peer_id": self.peer_id, "token": self.token} \
+                            if peer.get("type") == "tracker" else {}
                     r = requests.get(url, params=params, timeout=10)
-                    
                     if r.status_code == 200:
                         chunk_data = r.content
-                        if hashlib.sha256(chunk_data).hexdigest() == metadata['chunks'][i]['hash']:
-                            # chunk_name already defined above
-                            with open(local_storage / chunk_name, "wb") as f:
+                        if hashlib.sha256(chunk_data).hexdigest() == metadata["chunks"][i]["hash"]:
+                            with open(chunk_path, "wb") as f:
                                 f.write(chunk_data)
-                            
                             self.announce_chunk(file_stem, i)
-                            downloaded_chunks.append({"index": i, "filename": chunk_name})
-                            success = True
-                            break
+                            return True
                 except Exception:
                     continue
-            
-            if not success:
-               print(f"[WARN] Chunk {i} missing from all known peers")
-               # Don't return error immediately, proceed to try other chunks
-               continue
-        
-        # Final check
-        # Scan what we have
-        missing_indices = []
-        downloaded_indices = []
-        
-        # Check all chunks again
-        for i in range(metadata['total_chunks']):
-            chunk_name = f"{file_stem}_chunk_{i}"
-            if not (local_storage / chunk_name).exists():
-                missing_indices.append(i)
-            else:
-                downloaded_indices.append({"index": i, "filename": chunk_name})
-        
-        if missing_indices:
-            return f"Partial Download. Missing chunks: {missing_indices}"
+            return False
 
-        if self.reassemble(file_stem, metadata, downloaded_indices):
+        # ── Parallel download ──────────────────────────────────
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(fetch_chunk, i): i
+                    for i in range(metadata["total_chunks"])}
+            for future in as_completed(futures):
+                i = futures[future]
+                if not future.result():
+                    missing.append(i)
+
+        if missing:
+            return f"Partial Download. Missing chunks: {sorted(missing)}"
+
+        downloaded = [{"index": i,
+                    "filename": f"{file_stem}_chunk_{i}"}
+                    for i in range(metadata["total_chunks"])]
+        if self.reassemble(file_stem, metadata, downloaded):
             return "Download complete"
         return "Reassembly failed"
 

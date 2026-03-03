@@ -4,6 +4,9 @@ import json
 import struct
 import logging
 from pathlib import Path
+from shared.config import sanitize_stem, MAX_ASSIGNMENT_SIZE
+import sys
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 # Resolve STORAGE_PATH relative to this script:
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -78,9 +81,10 @@ class TCPServer:
             # Read Header
             header_json = self._recv_exact(conn, header_len)
             header = json.loads(header_json.decode('utf-8'))
-            
-            packet_type = header.get("packet_type", "chunk") # Default to chunk for backward compatibility
-            file_stem = header.get("file_stem")
+            sys.path.append(str(BASE_DIR.parent))      # already done at module level ideally
+
+            file_stem = sanitize_stem(header.get("file_stem", "unknown"))
+            packet_type = header.get("packet_type", "chunk")
             
             logger.info(f"Receiving TCP Packet: {packet_type} for {file_stem}")
             print(f"[TCP] Receiving {packet_type}: {file_stem}")
@@ -104,48 +108,54 @@ class TCPServer:
             elif packet_type == "assignment":
                 peer_id = header.get("peer_id")
                 signature_b64 = header.get("signature")
-                original_name = header.get("original_name")
-                
-                print(f"[TCP DEBUG] Checking public key for {peer_id}. Callback present: {self.get_public_key_cb is not None}")
-                if self.get_public_key_cb:
-                    public_key = self.get_public_key_cb(peer_id)
-                    print(f"[TCP DEBUG] Result from callback: {public_key[:20] if public_key else None}")
-                else:
-                    # We need to look up the public key from the server's registry
-                    # This requires importing the server registry, but since it's a global we can try to access it
-                    from server import approved_peers
-                    
-                    peer_info = approved_peers.get(peer_id)
-                    public_key = peer_info.public_key if peer_info else None
-                    print(f"[TCP DEBUG] Result from fallback import: {public_key[:20] if public_key else None}")
-                
+                original_name = sanitize_stem(header.get("original_name", "assignment"))
+
+                public_key = self.get_public_key_cb(peer_id) if self.get_public_key_cb else None
                 if not public_key:
-                    logger.error(f"Cannot verify assignment: Public key for {peer_id} not found.")
+                    logger.error(f"No public key for {peer_id} — rejecting assignment")
                     return
-                
-                # Receive file into memory for verification
-                file_data = b''
-                while True:
-                    data = conn.recv(4096)
-                    if not data:
-                        break
-                    file_data += data
-                    
-                # Verify
-                from security.crypto import verify_signature
-                is_valid = verify_signature(public_key, file_data, signature_b64)
-                
-                if is_valid:
+
+                # ── Stream to temp file with size cap ─────────────────
+                import tempfile, os
+                received = 0
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False,
+                                                    dir=STORAGE_PATH / "assignments",
+                                                    suffix=".tmp") as tmp:
+                        tmp_path = Path(tmp.name)
+                        while True:
+                            data = conn.recv(4096)
+                            if not data:
+                                break
+                            received += len(data)
+                            if received > MAX_ASSIGNMENT_SIZE:
+                                logger.error(f"Assignment from {peer_id} exceeds size limit")
+                                tmp_path.unlink(missing_ok=True)
+                                return
+                            tmp.write(data)
+
+                    # ── Verify signature ───────────────────────────────
+                    with open(tmp_path, "rb") as f:
+                        file_data = f.read()
+
+                    from security.crypto import verify_signature
+                    if not verify_signature(public_key, file_data, signature_b64):
+                        logger.error(f"Signature FAILED for {original_name} from {peer_id}")
+                        tmp_path.unlink(missing_ok=True)
+                        return
+
+                    # ── Save verified file ─────────────────────────────
                     save_dir = STORAGE_PATH / "assignments" / peer_id
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    save_path = save_dir / original_name
-                    
-                    with open(save_path, "wb") as f:
-                        f.write(file_data)
-                    
-                    logger.info(f"✅ Secure Assignment Verified and Saved: {save_path}")
-                else:
-                    logger.error(f"❌ Signature Verification Failed for {original_name} from {peer_id}")
+                    final_path = save_dir / original_name
+                    tmp_path.rename(final_path)
+                    logger.info(f"✅ Assignment verified & saved: {final_path}")
+
+                except Exception as e:
+                    logger.error(f"Assignment handler error: {e}")
+                    if tmp_path and tmp_path.exists():
+                        tmp_path.unlink(missing_ok=True)
 
             else:
                 # Default: Chunk

@@ -1,46 +1,23 @@
 import streamlit as st
 import requests
-import json
-from pathlib import Path
 import time
+
+from shared.config import load_admin_key
+ADMIN_KEY = load_admin_key()
 
 # Local imports
 from chunker import chunk_file
 from metadata import save_metadata
-from config import DEFAULT_TRACKER_PORT
 from tcp_handler import send_tcp_packet, STORAGE_PATH
 import socket
+from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
-def get_lan_ip():
-    """Detect the local machine's physical LAN IP address"""
-    try:
-        host_name = socket.gethostname()
-        ip_addresses = socket.gethostbyname_ex(host_name)[2]
-        
-        valid_ips = []
-        for ip in ip_addresses:
-            if ip.startswith("127."): continue
-            if ip.startswith("169.254."): continue
-            if ip.startswith("172."): continue  # Docker/WSL/Hyper-V
-            if ip.startswith("192.168.56."): continue # VirtualBox Host-Only
-            valid_ips.append(ip)
-            
-        if valid_ips:
-            # Prefer typical home router subnets
-            for ip in valid_ips:
-                if ip.startswith("192.168.") or ip.startswith("10."):
-                    return ip
-            return valid_ips[0]
-            
-        # Offline fallback: dummy local connection to force OS to choose an interface
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0)
-        s.connect(('192.168.1.1', 1)) 
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return '127.0.0.1'
+
+from shared.config import (
+    CHUNK_SIZE, DEFAULT_TRACKER_PORT, get_lan_ip,
+    find_available_port, sanitize_stem,
+    PeerInfo, ChunkLocation, FileMetadata, ChunkData
+)
 
 SERVER_URL = f"http://localhost:{DEFAULT_TRACKER_PORT}"
 
@@ -159,7 +136,10 @@ if page == "Publish New File":
                             # We fetch every render, which is fine for small scale
                             peer_options = {}
                             try:
-                                pres = requests.get(f"{SERVER_URL}/admin/peers")
+                                pres = requests.get(
+                                    f"{SERVER_URL}/admin/peers",
+                                    headers={"X-Admin-Key": ADMIN_KEY}
+                                )
                                 if pres.status_code == 200:
                                      for p in pres.json():
                                          peer_options[f"{p['peer_id']} ({p['host']})"] = p
@@ -255,7 +235,10 @@ elif page == "Connected Peers":
             st.rerun()
     
     try:
-        res = requests.get(f"{SERVER_URL}/admin/peers")
+        res = requests.get(
+            f"{SERVER_URL}/admin/peers",
+            headers={"X-Admin-Key": ADMIN_KEY}
+        )
         if res.status_code == 200:
             peers = res.json()
             if peers:
