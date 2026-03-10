@@ -413,11 +413,11 @@ p2p-file-sharing-network/
 
 | Name | Registration No. | Role & Contribution |
 |------|-----------------|---------------------|
-| [S. T Chanditha] | [2021/CSC/053] | Tracker server, authentication system, FastAPI endpoints, concurrent download engine, RSA crypto integration |
-| [B.M.C Bandaranayake] | [2021/CSC/098] | Peer client, cluster management |
-| [R.G.M.S Siriwardana] | [2021/CSC/106] | TCP handler, assignment submission |
-| [K.L.C Dilshan] | [2021/CSC/032] | Peer Node Streamlit dashboards, file chunking/reassembly, UDP discovery |
-| [W.M.S.S Wijesinghe] | [2021/CSC/063] | Privileged Streamlit dashboards, file chunking/reassembly, UDP discovery |
+| S. T Chanditha | 2021/CSC/053 | Tracker server, authentication system, FastAPI endpoints, concurrent download engine, RSA crypto integration |
+| B.M.C Bandaranayake | 2021/CSC/098 | Peer client, cluster management |
+| R.G.M.S Siriwardana | 2021/CSC/106 | TCP handler, assignment submission |
+| K.L.C Dilshan | 2021/CSC/032 | Peer Node Streamlit dashboards, file chunking/reassembly, UDP discovery |
+| W.M.S.S Wijesinghe | 2021/CSC/063 | Privileged Streamlit dashboards, file chunking/reassembly, UDP discovery |
 
 ---
 
@@ -425,11 +425,11 @@ p2p-file-sharing-network/
 
 | Name | Email | Institution |
 |------|-------|-------------|
-| [S. T Chanditha] | [thiwankachandithasinhalage@gmail.com] | [University of Jaffna, Department of Computer Science] |
-| [B.M.C Bandaranayake] | [smartchinthaka512@gmail.com] | [University of Jaffna, Department of Computer Science] |
-| [R.G.M.S Siriwardana] | [malinthassiriwardhana@gmail.com] | [University of Jaffna, Department of Computer Science] |
-| [K.L.C Dilshan] | [chamiyadilshanofficial@gmail.com] | | [University of Jaffna, Department of Computer Science] |
-| [W.M.S.S Wijesinghe] | [sewwandiwijesinghe68@gmail.com] | [University of Jaffna, Department of Computer Science] |
+| S. T Chanditha | thiwankachandithasinhalage@gmail.com | University of Jaffna, Department of Computer Science |
+| B.M.C Bandaranayake | smartchinthaka512@gmail.com | University of Jaffna, Department of Computer Science |
+| R.G.M.S Siriwardana | malinthassiriwardhana@gmail.com | University of Jaffna, Department of Computer Science |
+| K.L.C Dilshan | chamiyadilshanofficial@gmail.com | | University of Jaffna, Department of Computer Science |
+| W.M.S.S Wijesinghe | sewwandiwijesinghe68@gmail.com | University of Jaffna, Department of Computer Science |
 
 ---
 
