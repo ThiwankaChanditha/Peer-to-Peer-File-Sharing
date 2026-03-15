@@ -397,7 +397,8 @@ p2p-file-sharing-network/
 
 ## 8. Screenshots & Demo
 
-> 📹 **Demo Video:** ![Watch the Demo Video]([https://youtu.be/your_video_link](https://drive.google.com/file/d/1g50n-QBEpwVF-Ui_Baka-oxx9gjN6-l7/view?usp=sharing))
+📹 **Demo Video:**  
+➡️ [Watch the Demo](https://drive.google.com/file/d/1g50n-QBEpwVF-Ui_Baka-oxx9gjN6-l7/view?usp=sharing)
 
 | Screenshot | Description |
 |-----------|-------------|
