@@ -417,7 +417,7 @@ p2p-file-sharing-network/
 
 | Name | Registration No. | Role & Contribution |
 |------|-----------------|---------------------|
-| S. T Chanditha | 2021/CSC/053 | Tracker server, authentication system, FastAPI endpoints, concurrent download engine, RSA crypto integration |
+| S. T Chanditha | 2021/CSC/053 | Tracker server, authentication system, FastAPI endpoints, concurrent download engine, RSA crypto integration, Privileged Peer |
 | B.M.C Bandaranayake | 2021/CSC/098 | Peer client, cluster management |
 | R.G.M.S Siriwardana | 2021/CSC/106 | TCP handler, assignment submission |
 | K.L.C Dilshan | 2021/CSC/032 | Peer Node Streamlit dashboards, file chunking/reassembly, UDP discovery |
