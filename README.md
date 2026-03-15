@@ -31,7 +31,11 @@
 
 ### Problem Statement
 
-Centralised file distribution systems create **single points of failure**. When a central server goes offline, all transfers stop. At scale, bandwidth bottlenecks form as hundreds of clients simultaneously request the same file from one host, driving up infrastructure costs and degrading performance. Most common tools also offer no built-in mechanism to verify the **identity of participants** or the **integrity of transferred files**, leaving networks vulnerable to impersonation, data corruption, and unauthorised submissions.
+University computer laboratories present a distinct set of file distribution and assignment management challenges that general-purpose cloud tools are poorly suited to address. Lab environments typically operate on isolated Local Area Networks with no reliable internet access, making cloud-based platforms such as Google Drive or institutional portals unavailable during practical sessions. When course material or software packages need to be distributed to an entire class simultaneously, the conventional approach of serving files from a single instructor machine creates an immediate bandwidth bottleneck: every student workstation competes for the same connection, causing degraded transfer speeds that worsen as class size grows and making the entire distribution dependent on one machine remaining online throughout the session.
+
+Assignment submission in this environment is equally problematic. Without internet connectivity, students typically resort to USB drives or email-based submission after the session, both of which introduce opportunities for file tampering, loss, and disputes over authorship. There is no built-in mechanism to cryptographically bind a submission to the identity of the submitting student, leaving no verifiable record that a particular student produced and submitted a particular file at a particular time.
+
+This project directly targets these lab-context problems by implementing a fully decentralized peer to peer file sharing network that operates entirely within a LAN, requires no external infrastructure, distributes both the storage and transfer load across all participating machines, and provides cryptographically verifiable assignment submission. The result is a system that remains fully functional in offline lab conditions while offering stronger authenticity and integrity guarantees than any conventional file sharing approach used in such environments.
 
 ### Objectives
 
@@ -393,7 +397,7 @@ p2p-file-sharing-network/
 
 ## 8. Screenshots & Demo
 
-> 📹 **Demo Video:** `https://drive.google.com/drive/folders/1oLWoHWeoMU69Zub-_clINhIn57XPnKKn?usp=sharing`
+> 📹 **Demo Video:** [Watch the Demo Video]([https://youtu.be/your_video_link](https://drive.google.com/file/d/1g50n-QBEpwVF-Ui_Baka-oxx9gjN6-l7/view?usp=sharing))
 
 | Screenshot | Description |
 |-----------|-------------|
