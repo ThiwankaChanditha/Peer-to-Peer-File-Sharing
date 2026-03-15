@@ -397,15 +397,14 @@ p2p-file-sharing-network/
 
 | Screenshot | Description |
 |-----------|-------------|
-| Admin Dashboard — Publish New File | File upload widget, chunk count display, MIME detection result, registry list with search and Remove buttons |
-| Admin Dashboard — Connected Peers | Live table of active peer nodes showing `peer_id`, `host:port`, and online status |
-| Admin Dashboard — Submissions | Per-peer expandable sections listing verified assignment files with RSA verification badge and Download button |
-| Peer Dashboard — Network Library | Searchable grid of available files with Download and Distribute expanders |
-| Peer Dashboard — Download in Progress | `st.status` widget showing chunk fetch progress, hash verification steps, and completion confirmation |
-| Peer Dashboard — Sidebar Cluster | Latency display for each neighbour peer (green < 50 ms, orange < 200 ms, red otherwise) |
-| Peer Dashboard — My Library | Local file list showing chunk completeness, Assembled / Incomplete / Chunks Ready states, and Delete action |
+| ![Screenshot](images/Admin Dashboard — Publish New File) | File upload widget, chunk count display, MIME detection result, registry list with search and Remove buttons |
+| ![Screenshot](images/Admin Dashboard — Connected Peers) | Live table of active peer nodes showing `peer_id`, `host:port`, and online status |
+| ![Screenshot](images/Admin Dashboard — Submissions) | Per-peer expandable sections listing verified assignment files with RSA verification badge and Download button |
+| ![Screenshot](images/Peer Dashboard — Network Library) | Searchable grid of available files with Download and Distribute expanders |
+| ![Screenshot](images/Peer Dashboard — Download in Progress) | `st.status` widget showing chunk fetch progress, hash verification steps, and completion confirmation |
+| ![Screenshot](images/Peer Dashboard — Download in Progress) | Latency display for each neighbour peer (green < 50 ms, orange < 200 ms, red otherwise) |
+| ![Screenshot](images/Peer Dashboard — My Library) | Local file list showing chunk completeness, Assembled / Incomplete / Chunks Ready states, and Delete action |
 
-*Replace the rows above with actual screenshots once the system is running.*
 
 ---
 
