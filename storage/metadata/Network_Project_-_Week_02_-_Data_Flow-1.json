@@ -1,0 +1,27 @@
+{
+  "original_name": "Network Project - Week 02 - Data Flow-1.pdf",
+  "original_extension": ".pdf",
+  "file_stem": "Network_Project_-_Week_02_-_Data_Flow-1",
+  "mime_type": "application/pdf",
+  "total_chunks": 3,
+  "chunks": [
+    {
+      "index": 0,
+      "hash": "6325f8ffcbacd2ec44c41c0481be2052175b43b5fa74446f5a8429a8721b7503",
+      "filename": "Network_Project_-_Week_02_-_Data_Flow-1_chunk_0",
+      "size": 524288
+    },
+    {
+      "index": 1,
+      "hash": "94691ebdf170917a181e95dfa93f944b8bbdb4e9087e091f1f21fe5fc8b515ab",
+      "filename": "Network_Project_-_Week_02_-_Data_Flow-1_chunk_1",
+      "size": 524288
+    },
+    {
+      "index": 2,
+      "hash": "5a47b4473306885bd24fb292a03b7e9ee8244045f4de98ca0f4e3d8017f939c1",
+      "filename": "Network_Project_-_Week_02_-_Data_Flow-1_chunk_2",
+      "size": 283616
+    }
+  ]
+}
