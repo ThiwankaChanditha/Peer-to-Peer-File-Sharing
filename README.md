@@ -393,7 +393,7 @@ p2p-file-sharing-network/
 
 ## 8. Screenshots & Demo
 
-> 📹 **Demo Video:** `[Insert link — YouTube / Google Drive / institution host]`
+> 📹 **Demo Video:** `https://drive.google.com/drive/folders/1oLWoHWeoMU69Zub-_clINhIn57XPnKKn?usp=sharing`
 
 | Screenshot | Description |
 |-----------|-------------|
