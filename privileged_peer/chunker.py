@@ -52,7 +52,9 @@ def chunk_file(file_path: str, out_dir: str = None):
                 break
 
             chunk_hash = sha256(data)
-            chunk_name = f"{file_path.stem}_chunk_{index}"
+            from config import normalize_stem
+            safe_stem = normalize_stem(file_path.name)
+            chunk_name = f"{safe_stem}_chunk_{index}"
             chunk_path = out_dir_path / chunk_name
 
             with open(chunk_path, "wb") as cf:
@@ -66,10 +68,11 @@ def chunk_file(file_path: str, out_dir: str = None):
             })
             index += 1
 
+    from config import normalize_stem
     return {
         "original_name": file_path.name,
         "original_extension": file_path.suffix,
-        "file_stem": file_path.stem,
+        "file_stem": normalize_stem(file_path.name),
         "mime_type": mime_type,
         "chunks": chunks,
         "total_chunks": len(chunks)

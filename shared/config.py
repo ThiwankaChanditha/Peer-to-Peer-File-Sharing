@@ -63,6 +63,22 @@ def sanitize_stem(stem: str) -> str:
     name = Path(stem).name          
     return re.sub(r"[^\w\-.]", "_", name)
 
+def normalize_stem(filename: str, max_len: int = 60) -> str:
+    """
+    Produce a short, URL-safe stem from an original filename.
+    Keeps it deterministic so the same file always gets the same stem.
+    """
+    import re, hashlib
+    from pathlib import Path
+    stem = Path(filename).stem
+    # Replace spaces and unsafe chars with underscores
+    safe = re.sub(r"[^\w\-]", "_", stem)
+    # If too long, truncate and append a short hash for uniqueness
+    if len(safe) > max_len:
+        suffix = hashlib.sha256(stem.encode()).hexdigest()[:8]
+        safe = safe[:max_len] + "_" + suffix
+    return safe
+
 class PeerInfo(BaseModel):
     peer_id: str
     host: str

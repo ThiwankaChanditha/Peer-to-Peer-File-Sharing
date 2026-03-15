@@ -234,7 +234,7 @@ class PeerClient:
     def get_metadata(self, file_stem: str) -> Optional[dict]:
         try:
             from urllib.parse import quote
-            safe_stem = quote(file_stem)
+            safe_stem = quote(file_stem, safe='')
             params = {"peer_id": self.peer_id, "token": self.token}
             # Use safe_stem in URL path
             res = requests.get(f"{self.tracker_url}/metadata/{safe_stem}", params=params)
@@ -271,7 +271,7 @@ class PeerClient:
     def find_chunk_owners(self, file_stem: str, chunk_index: int) -> List[dict]:
         try:
             from urllib.parse import quote
-            safe_stem = quote(file_stem)
+            safe_stem = quote(file_stem, safe='')
             params = {"peer_id": self.peer_id, "token": self.token}
             res = requests.get(
                 f"{self.tracker_url}/peers/{safe_stem}/{chunk_index}", 

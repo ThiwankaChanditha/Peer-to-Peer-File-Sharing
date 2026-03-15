@@ -166,7 +166,7 @@ async def announce_chunk_endpoint(announcement: Announcement,
     chunk_locations[file_id].setdefault(announcement.chunk_index, set()).add(peer_id)
     return {"status": "acknowledged"}
 
-@app.get("/peers/{file_stem}/{chunk_index}")
+@app.get("/peers/{file_stem:path}/{chunk_index}")
 async def get_chunk_owners(file_stem: str, chunk_index: int,
                             peer_id: str, token: str):
     if not validate_token(peer_id, token):
@@ -193,7 +193,7 @@ async def get_chunk_owners(file_stem: str, chunk_index: int,
 
     return {"owners": result}
 
-@app.get("/metadata/{file_stem}")
+@app.get("/metadata/{file_stem:path}")
 async def get_metadata(file_stem: str, peer_id: str, token: str):
     if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
@@ -228,7 +228,7 @@ async def get_metadata(file_stem: str, peer_id: str, token: str):
     with open(meta_path, "r", encoding='utf-8') as f: # Added 'encoding' just in case
         return json.load(f)
 
-@app.get("/chunk/{file_stem}/{chunk_index}")
+@app.get("/chunk/{file_stem:path}/{chunk_index}")
 async def download_chunk(file_stem: str, chunk_index: int, peer_id: str, token: str):
     if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
