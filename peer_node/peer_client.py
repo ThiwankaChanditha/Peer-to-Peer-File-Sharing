@@ -246,11 +246,9 @@ class PeerClient:
 
     def get_active_peers(self) -> List[dict]:
         try:
-            from shared.config import load_admin_key
-            admin_key = load_admin_key()
             res = requests.get(
-                f"{self.tracker_url}/admin/peers",
-                headers={"X-Admin-Key": admin_key},
+                f"{self.tracker_url}/peers",
+                params={"peer_id": self.peer_id, "token": self.token},
                 timeout=5
             )
             if res.status_code == 200:

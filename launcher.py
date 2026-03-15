@@ -51,7 +51,7 @@ class P2PLauncher:
             
             # Use cmd /k to keep the window open so we can see errors
             if os.name == 'nt':
-                cmd = ["cmd", "/k", python_exe, "-m", "streamlit", "run", script_path]
+                cmd = f'cmd /k ""{python_exe}" -m streamlit run "{script_path}""'
                 subprocess.Popen(cmd, cwd=self.cwd, creationflags=subprocess.CREATE_NEW_CONSOLE)
             else:
                 cmd = [python_exe, "-m", "streamlit", "run", script_path]
@@ -68,7 +68,7 @@ class P2PLauncher:
             if os.path.exists(server_script):
                 python_exe = sys.executable
                 if os.name == 'nt':
-                    cmd = ["cmd", "/k", python_exe, server_script]
+                    cmd = f'cmd /k ""{python_exe}" "{server_script}""'
                     subprocess.Popen(cmd, cwd=self.cwd, creationflags=subprocess.CREATE_NEW_CONSOLE)
                 else:
                     cmd = [python_exe, server_script]

@@ -75,8 +75,14 @@ def find_available_port(start_port: int, max_port: int = 65535):
     raise RuntimeError(f"No available ports found between {start_port} and {max_port}")
 
 from shared.config import load_admin_key
-ADMIN_API_KEY = load_admin_key() or secrets.token_urlsafe(24)
-print(f"[SECURITY] Admin API Key: {ADMIN_API_KEY}") 
+admin_key_path = BASE_DIR / "admin_key.txt"
+ADMIN_API_KEY = load_admin_key()
+if not ADMIN_API_KEY:
+    ADMIN_API_KEY = secrets.token_urlsafe(24)
+    admin_key_path.write_text(ADMIN_API_KEY)
+    print(f"[SECURITY] Auto-generated and saved Admin API Key to {admin_key_path}")
+else:
+    print(f"[SECURITY] Loaded Admin API Key: {ADMIN_API_KEY[:5]}***")
 
 _admin_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
@@ -325,6 +331,16 @@ async def unregister_file(info: FileUnregistration):
 @app.get("/admin/peers")
 async def get_all_peers(_: None = Depends(require_admin)):
     return [p.model_dump() for p in approved_peers.values()]
+
+@app.get("/peers")
+async def list_peers(peer_id: str, token: str):
+    """Public (token-authenticated) peer list for peer nodes."""
+    if not validate_token(peer_id, token):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    return [
+        {"peer_id": p.peer_id, "host": p.host, "port": p.port}
+        for p in approved_peers.values()
+    ]
 
 def broadcast_presence():
     import time

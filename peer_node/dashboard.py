@@ -5,8 +5,7 @@ import json
 from pathlib import Path
 import socket
 
-from shared.config import load_admin_key
-ADMIN_KEY = load_admin_key()
+ 
 
 import logging
 from pydantic import BaseModel
@@ -91,11 +90,9 @@ st.sidebar.subheader("Neighbors (Peers)")
 # Wait, the prompt says "peer discovery should be also in the peer dashboard".
 # We should probably add a get_peers method to client or just call the API.
 try:
-    # Quick hack to get peers from tracker public endpoint
-    # The X-Admin-Key is already being imported as ADMIN_KEY at the top
     r = requests.get(
-        f"{client.tracker_url}/admin/peers",
-        headers={"X-Admin-Key": ADMIN_KEY},
+        f"{client.tracker_url}/peers",
+        params={"peer_id": client.peer_id, "token": client.token},
         timeout=2
     )
 
