@@ -124,13 +124,17 @@ class TCPServer:
                     return
 
                 # ── Stream to temp file with size cap ─────────────────
-                import tempfile, os
+                # Make the target directory early so we can write the temp file there
+                save_dir = STORAGE_PATH / "assignments" / peer_id
+                save_dir.mkdir(parents=True, exist_ok=True)
+                
+                tmp_path = save_dir / f"{original_name}.tmp"
                 received = 0
-                tmp_path = None
+                
                 try:
                     payload_size = header.get("payload_size")
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
-                        tmp_path = Path(tmp.name)
+                    # Create temp file directly in the target directory
+                    with open(tmp_path, "wb") as tmp:
                         if payload_size is not None:
                             while received < payload_size:
                                 data = conn.recv(min(4096, payload_size - received))
@@ -165,10 +169,9 @@ class TCPServer:
                         return
 
                     # ── Save verified file ─────────────────────────────
-                    save_dir = STORAGE_PATH / "assignments" / peer_id
-                    save_dir.mkdir(parents=True, exist_ok=True)
                     final_path = save_dir / original_name
-                    tmp_path.rename(final_path)
+                    import shutil
+                    shutil.move(str(tmp_path), str(final_path))
                     logger.info(f"✅ Assignment verified & saved: {final_path}")
 
                 except Exception as e:
@@ -224,11 +227,11 @@ def send_tcp_packet(target_ip: str, target_port: int, header: dict, file_path: P
         if not file_path.exists():
             return False, f"File not found: {file_path}"
             
-            import os
-            header["payload_size"] = os.path.getsize(file_path)
-            
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((target_ip, int(target_port)))
+        import os
+        header["payload_size"] = os.path.getsize(file_path)
+        
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((target_ip, int(target_port)))
             
             # Prepare Header
             header_bytes = json.dumps(header).encode('utf-8')
