@@ -160,11 +160,11 @@ def send_tcp_packet(target_ip: str, target_port: int, header: dict, file_path: P
         if not file_path.exists():
             return False, f"File not found: {file_path}"
             
-            import os
-            header["payload_size"] = os.path.getsize(file_path)
-            
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((target_ip, int(target_port)))
+        import os
+        header["payload_size"] = os.path.getsize(file_path)
+        
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((target_ip, int(target_port)))
             
             # Prepare Header
             header_bytes = json.dumps(header).encode('utf-8')
