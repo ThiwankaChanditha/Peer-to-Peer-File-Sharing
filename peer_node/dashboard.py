@@ -83,6 +83,21 @@ if not client.token:
             st.rerun()
 
 st.sidebar.divider()
+bootstrap_input = st.sidebar.text_input(
+    "Bootstrap Tracker IP", 
+    placeholder="192.168.1.5:8000",
+    help="Use if auto-discovery fails (different subnet)"
+)
+if bootstrap_input and st.sidebar.button("Connect to Tracker"):
+    url = bootstrap_input if bootstrap_input.startswith("http") else f"http://{bootstrap_input}"
+    client.tracker_url = url
+    if client.join_network():
+        st.sidebar.success("Connected!")
+        st.rerun()
+    else:
+        st.sidebar.error("Could not connect.")
+
+st.sidebar.divider()
 st.sidebar.subheader("Neighbors (Peers)")
 # We can use find_chunk_owners logic or just ask for all peers?
 # Client doesn't have a public get_peers method, but we can hit the endpoint manually or add it.
@@ -176,13 +191,13 @@ with st.expander("Browse & Download", expanded=True):
                         if st.button("Send", key=f"snd_{f['stem']}"):
                             if tgt_key:
                                 target = peer_opts[tgt_key]
-                                tcp_port = target['port'] + 1
+                                tcp_port = target.get('tcp_port') or target['port'] + 1
                                 st.toast(f"Pushing to {target['host']}...")
-                                status = client.push_file_tcp(target['host'], int(tcp_port), f['stem'])
-                                if "Success" in status:
+                                success, msg = client.push_file_tcp(target['host'], int(tcp_port), f['stem'])
+                                if success:
                                     st.success("Sent!")
                                 else:
-                                    st.error(status)
+                                    st.error(msg)
     else:
         st.info("Library is empty. (Check connection or wait for uploads)")
 
@@ -191,6 +206,11 @@ with st.expander("📝 Assignment Submission", expanded=False):
     uploaded_assignment = st.file_uploader("Upload Assignment File", key="assignment_upload")
     if uploaded_assignment:
         if st.button("Sign & Submit", key="submit_assignment_btn", type="primary"):
+            # Pre-flight check
+            if not client.token:
+                st.error("Not connected to network. Use 'Try Auto-Connect' in the sidebar first.")
+                st.stop()
+                
             # Temporarily save uploaded file
             temp_dir = BASE_DIR / "temp_uploads"
             temp_dir.mkdir(parents=True, exist_ok=True)

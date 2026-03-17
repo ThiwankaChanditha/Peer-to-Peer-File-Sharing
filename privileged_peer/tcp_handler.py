@@ -97,12 +97,20 @@ class TCPServer:
                 
                 # Receive content into memory then write (metadata is small)
                 # Or stream it. Streaming is safer.
+                payload_size = header.get("payload_size")
                 with open(save_path, "wb") as f:
-                     while True:
-                        data = conn.recv(4096)
-                        if not data:
-                            break
-                        f.write(data)
+                    if payload_size is not None:
+                        received = 0
+                        while received < payload_size:
+                            data = conn.recv(min(4096, payload_size - received))
+                            if not data: break
+                            f.write(data)
+                            received += len(data)
+                    else:
+                        while True:
+                            data = conn.recv(4096)
+                            if not data: break
+                            f.write(data)
                 print(f"[TCP] Saved Metadata: {save_path}")
 
             elif packet_type == "assignment":
@@ -120,20 +128,31 @@ class TCPServer:
                 received = 0
                 tmp_path = None
                 try:
-                    with tempfile.NamedTemporaryFile(delete=False,
-                                                    dir=STORAGE_PATH / "assignments",
-                                                    suffix=".tmp") as tmp:
+                    payload_size = header.get("payload_size")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
                         tmp_path = Path(tmp.name)
-                        while True:
-                            data = conn.recv(4096)
-                            if not data:
-                                break
-                            received += len(data)
-                            if received > MAX_ASSIGNMENT_SIZE:
-                                logger.error(f"Assignment from {peer_id} exceeds size limit")
-                                tmp_path.unlink(missing_ok=True)
-                                return
-                            tmp.write(data)
+                        if payload_size is not None:
+                            while received < payload_size:
+                                data = conn.recv(min(4096, payload_size - received))
+                                if not data: break
+                                received += len(data)
+                                if received > MAX_ASSIGNMENT_SIZE:
+                                    logger.error(f"Assignment from {peer_id} exceeds size limit")
+                                    tmp.close()
+                                    tmp_path.unlink(missing_ok=True)
+                                    return
+                                tmp.write(data)
+                        else:
+                            while True:
+                                data = conn.recv(4096)
+                                if not data: break
+                                received += len(data)
+                                if received > MAX_ASSIGNMENT_SIZE:
+                                    logger.error(f"Assignment from {peer_id} exceeds size limit")
+                                    tmp.close()
+                                    tmp_path.unlink(missing_ok=True)
+                                    return
+                                tmp.write(data)
 
                     # ── Verify signature ───────────────────────────────
                     with open(tmp_path, "rb") as f:
@@ -165,12 +184,20 @@ class TCPServer:
                 save_dir.mkdir(parents=True, exist_ok=True)
                 save_path = save_dir / chunk_name
                 
+                payload_size = header.get("payload_size")
                 with open(save_path, "wb") as f:
-                    while True:
-                        data = conn.recv(4096)
-                        if not data:
-                            break
-                        f.write(data)
+                    if payload_size is not None:
+                        received = 0
+                        while received < payload_size:
+                            data = conn.recv(min(4096, payload_size - received))
+                            if not data: break
+                            f.write(data)
+                            received += len(data)
+                    else:
+                        while True:
+                            data = conn.recv(4096)
+                            if not data: break
+                            f.write(data)
                 print(f"[TCP] Saved Chunk: {save_path}")
             
         except Exception as e:
@@ -197,8 +224,11 @@ def send_tcp_packet(target_ip: str, target_port: int, header: dict, file_path: P
         if not file_path.exists():
             return False, f"File not found: {file_path}"
             
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((target_ip, int(target_port)))
+            import os
+            header["payload_size"] = os.path.getsize(file_path)
+            
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((target_ip, int(target_port)))
             
             # Prepare Header
             header_bytes = json.dumps(header).encode('utf-8')

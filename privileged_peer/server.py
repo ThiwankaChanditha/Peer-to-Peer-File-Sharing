@@ -94,18 +94,57 @@ app = FastAPI(title="Privileged Peer Tracker")
 
 # Store approved peers: peer_id -> PeerInfo
 approved_peers: Dict[str, PeerInfo] = {}
+approved_peers_lock = asyncio.Lock()
+
+PEERS_PERSIST_PATH = STORAGE_PATH / "peers.json"
+
+def save_peers():
+    """Persist approved_peers to disk."""
+    try:
+        data = {
+            pid: {
+                "peer_id": p.peer_id,
+                "host": p.host,
+                "port": p.port,
+                "tcp_port": p.tcp_port,
+                "status": p.status,
+                "public_key": p.public_key,
+                "last_seen": p.last_seen
+            }
+            for pid, p in approved_peers.items()
+        }
+        PEERS_PERSIST_PATH.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        logging.warning(f"Failed to persist peers: {e}")
+
+def load_peers():
+    """Load approved_peers from disk on startup."""
+    if not PEERS_PERSIST_PATH.exists():
+        return
+    try:
+        data = json.loads(PEERS_PERSIST_PATH.read_text())
+        for pid, p in data.items():
+            approved_peers[pid] = PeerInfo(**p)
+            # Re-issue tokens for previously known peers
+            issue_token(pid)
+        logging.info(f"Restored {len(approved_peers)} peers from disk.")
+    except Exception as e:
+        logging.warning(f"Failed to load peers: {e}")
 
 # track chunk locations: file_hash -> chunk_index -> Set[peer_id]
 chunk_locations: Dict[str, Dict[int, Set[str]]] = {}
+chunk_locations_lock = asyncio.Lock()
 
 # file metadata cache: file_stem -> FileMetadata
 file_registry: Dict[str, FileMetadata] = {}
+file_registry_lock = asyncio.Lock()
 
 def generate_token():
     return secrets.token_urlsafe(32)
 
 @app.on_event("startup")
 async def startup_event():
+    load_peers()
     # Load existing metadata into registry
     metadata_dir = STORAGE_PATH / "metadata"
     if metadata_dir.exists():
@@ -131,14 +170,17 @@ async def startup_event():
 @app.post("/join")
 async def join(peer: PeerInfo):
     peer.last_seen = time.time()
-    if peer.peer_id in approved_peers:
-        approved_peers[peer.peer_id] = peer
-        # Re-issue token so the peer gets a fresh one
-        token = issue_token(peer.peer_id)
-        return {"status": "rejoined", "token": token}
+    async with approved_peers_lock:
+        if peer.peer_id in approved_peers:
+            approved_peers[peer.peer_id] = peer
+            save_peers()
+            # Re-issue token so the peer gets a fresh one
+            token = issue_token(peer.peer_id)
+            return {"status": "rejoined", "token": token}
 
-    token = issue_token(peer.peer_id)
-    approved_peers[peer.peer_id] = peer
+        token = issue_token(peer.peer_id)
+        approved_peers[peer.peer_id] = peer
+        save_peers()
     return {
         "status": "approved",
         "token": token,
@@ -157,13 +199,15 @@ async def announce_chunk_endpoint(announcement: Announcement,
         raise HTTPException(status_code=403, detail="Unauthorized")
     
     # Update last_seen
-    if peer_id in approved_peers:
-        approved_peers[peer_id].last_seen = time.time()
+    async with approved_peers_lock:
+        if peer_id in approved_peers:
+            approved_peers[peer_id].last_seen = time.time()
 
     file_id = sanitize_stem(announcement.file_stem)   # ← sanitize here
-    if file_id not in chunk_locations:
-        chunk_locations[file_id] = {}
-    chunk_locations[file_id].setdefault(announcement.chunk_index, set()).add(peer_id)
+    async with chunk_locations_lock:
+        if file_id not in chunk_locations:
+            chunk_locations[file_id] = {}
+        chunk_locations[file_id].setdefault(announcement.chunk_index, set()).add(peer_id)
     return {"status": "acknowledged"}
 
 @app.get("/peers/{file_stem:path}/{chunk_index}")
@@ -179,17 +223,19 @@ async def get_chunk_owners(file_stem: str, chunk_index: int,
     if tracker_path.exists():
         owners.add("privileged_peer")
 
-    if file_stem in chunk_locations and chunk_index in chunk_locations[file_stem]:
-        owners.update(chunk_locations[file_stem][chunk_index])
+    async with chunk_locations_lock:
+        if file_stem in chunk_locations and chunk_index in chunk_locations[file_stem]:
+            owners.update(chunk_locations[file_stem][chunk_index])
 
     if "privileged_peer" in owners:
         result.append({"peer_id": "privileged_peer", "host": get_lan_ip(),
                         "port": DEFAULT_TRACKER_PORT, "type": "tracker"})
         owners.discard("privileged_peer")
 
-    for oid in owners:
-        if oid in approved_peers:
-            result.append(approved_peers[oid].model_dump())
+    async with approved_peers_lock:
+        for oid in owners:
+            if oid in approved_peers:
+                result.append(approved_peers[oid].model_dump())
 
     return {"owners": result}
 
@@ -261,16 +307,17 @@ async def tracker_pubkey():
 @app.get("/files")
 async def list_files():
     """List all files available on the network"""
-    return [
-        {
-            "stem": stem,
-            "name": meta.file_name,
-            "size": meta.file_size, # Might be 0 if legacy
-            "total_chunks": meta.total_chunks,
-            "mime_type": meta.mime_type
-        }
-        for stem, meta in file_registry.items()
-    ]
+    async with file_registry_lock:
+        return [
+            {
+                "stem": stem,
+                "name": meta.file_name,
+                "size": meta.file_size, # Might be 0 if legacy
+                "total_chunks": meta.total_chunks,
+                "mime_type": meta.mime_type
+            }
+            for stem, meta in file_registry.items()
+        ]
 
 class FileRegistration(BaseModel):
     file_stem: str
@@ -281,20 +328,22 @@ class FileRegistration(BaseModel):
 @app.post("/register_file")
 async def register_file(file_info: FileRegistration):
     """Manually register a file (called by Admin Dashboard)"""
-    file_registry[file_info.file_stem] = FileMetadata(
-        file_name=file_info.original_name,
-        file_hash=file_info.file_stem, # fallback
-        total_chunks=file_info.total_chunks,
-        file_size=0,
-        mime_type=file_info.mime_type
-    )
+    async with file_registry_lock:
+        file_registry[file_info.file_stem] = FileMetadata(
+            file_name=file_info.original_name,
+            file_hash=file_info.file_stem, # fallback
+            total_chunks=file_info.total_chunks,
+            file_size=0,
+            mime_type=file_info.mime_type
+        )
     return {"status": "registered", "file_stem": file_info.file_stem}
 
 @app.delete("/flush_registry")
 async def flush_registry():
     """Admin: Clear all files from registry"""
-    count = len(file_registry)
-    file_registry.clear()
+    async with file_registry_lock:
+        count = len(file_registry)
+        file_registry.clear()
     
     # Delete all metadata files
     try:
@@ -314,10 +363,11 @@ class FileUnregistration(BaseModel):
 @app.post("/unregister_file")
 async def unregister_file(info: FileUnregistration):
     """Admin: Remove file from registry"""
-    if info.file_stem in file_registry:
-        del file_registry[info.file_stem]
-        
-        # Also delete the metadata file from disk so it doesn't reappear on restart
+    async with file_registry_lock:
+        if info.file_stem in file_registry:
+            del file_registry[info.file_stem]
+            
+            # Also delete the metadata file from disk so it doesn't reappear on restart
         meta_path = STORAGE_PATH / "metadata" / f"{info.file_stem}.json"
         try:
             if meta_path.exists():
@@ -330,17 +380,19 @@ async def unregister_file(info: FileUnregistration):
 
 @app.get("/admin/peers")
 async def get_all_peers(_: None = Depends(require_admin)):
-    return [p.model_dump() for p in approved_peers.values()]
+    async with approved_peers_lock:
+        return [p.model_dump() for p in approved_peers.values()]
 
 @app.get("/peers")
 async def list_peers(peer_id: str, token: str):
     """Public (token-authenticated) peer list for peer nodes."""
     if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
-    return [
-        {"peer_id": p.peer_id, "host": p.host, "port": p.port}
-        for p in approved_peers.values()
-    ]
+    async with approved_peers_lock:
+        return [
+            {"peer_id": p.peer_id, "host": p.host, "port": p.port}
+            for p in approved_peers.values()
+        ]
 
 def broadcast_presence():
     import time
@@ -408,20 +460,24 @@ async def start_peer_cleanup():
         while True:
             await asyncio.sleep(60)
             cutoff = time.time() - 300   # 5 minutes — gives peers time to start up and send heartbeats
-            stale = [pid for pid, p in approved_peers.items()
-                     if p.last_seen > 0 and p.last_seen < cutoff]
-            for pid in stale:
-                logging.info(f"[CLEANUP] Removing stale peer: {pid}")
-                del approved_peers[pid]
-                revoke_token(pid)
+            async with approved_peers_lock:
+                stale = [pid for pid, p in approved_peers.items()
+                         if p.last_seen > 0 and p.last_seen < cutoff]
+                for pid in stale:
+                    logging.info(f"[CLEANUP] Removing stale peer: {pid}")
+                    del approved_peers[pid]
+                    revoke_token(pid)
+                if stale:
+                    save_peers()
     asyncio.create_task(_cleanup())
 
 @app.post("/heartbeat")
 async def heartbeat(peer_id: str, token: str):
     if not validate_token(peer_id, token):
         raise HTTPException(status_code=403, detail="Unauthorized")
-    if peer_id in approved_peers:
-        approved_peers[peer_id].last_seen = time.time()
+    async with approved_peers_lock:
+        if peer_id in approved_peers:
+            approved_peers[peer_id].last_seen = time.time()
     return {"status": "ok"}
 
 if __name__ == "__main__":

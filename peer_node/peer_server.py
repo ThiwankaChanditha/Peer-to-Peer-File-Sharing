@@ -19,6 +19,7 @@ app = FastAPI(title="Peer Node Server")
 @app.get("/chunk/{file_stem}/{chunk_index}")
 async def upload_chunk(file_stem: str, chunk_index: int):
     # Verify we actually have this chunk
+    file_stem = sanitize_stem(file_stem)
     chunk_name = f"{file_stem}_chunk_{chunk_index}"
     # Default storage for received chunks
     chunk_path = STORAGE_PATH / "received_chunks" / chunk_name

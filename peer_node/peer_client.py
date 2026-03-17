@@ -35,20 +35,31 @@ class PeerClient:
         self.host = get_lan_ip()
         
         # Find contiguous ports for HTTP (port) and TCP (port + 1)
-        def find_port_pair(start):
+        def find_and_reserve_port_pair(host: str, start: int = 5000):
+            """
+            Find two consecutive free ports and return them.
+            Binds both sockets to reserve them, then closes just before use.
+            """
             p = start
             while p < 65500:
+                s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s1:
-                        s1.bind((self.host, p))
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
-                            s2.bind((self.host, p + 1))
-                            return p
+                    s1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s1.bind((host, p))
+                    s2.bind((host, p + 1))
+                    # Both ports are free — release and return
+                    s1.close()
+                    s2.close()
+                    return p
                 except OSError:
+                    s1.close()
+                    s2.close()
                     p += 1
-            return start
+            raise RuntimeError("No available port pair found")
 
-        self.port = find_port_pair(5000)
+        self.port = find_and_reserve_port_pair(self.host)
         self.tcp_port = self.port + 1
 
         self.tcp_server = TCPServer(self.host, self.tcp_port)
@@ -59,18 +70,14 @@ class PeerClient:
         # Start the HTTP chunk server
         threading.Thread(target=start_peer_server, args=(self.host, self.port), daemon=True).start()
 
-        # Generate or load RSA Keys for this peer
-        self.peer_storage_path = BASE_DIR / "storage" / "peer_data" / self.peer_id
-        self.private_key, self.public_key_obj = load_or_generate_keys(self.peer_storage_path)
-        
-        from security.crypto import serialize_public_key
-        self.public_key = serialize_public_key(self.public_key_obj)
+        # self.peer_storage_path and keys are already handled above
 
         self.token = None
         self.active_peers = []
         
         # cluster: dict mapping peer_id -> latency (ms)
         self.cluster = {}
+        self.cluster_lock = threading.Lock()
         
         # Start background threads
         # Start the UDP broadcaster listener thread
@@ -79,6 +86,9 @@ class PeerClient:
         
         # Start cluster update thread (heartbeat & latency checks)
         threading.Thread(target=self.update_cluster_loop, daemon=True).start()
+        
+        # Start heartbeat loop to keep peer active on tracker
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         
         logging.info(f"Initialized Peer {self.peer_id} at {self.host}:{self.port}")
         
@@ -101,13 +111,38 @@ class PeerClient:
         except Exception:
             return float('inf')
 
+    def _request_with_reconnect(self, method: str, url: str, **kwargs):
+        """Wrapper that auto-rejoins if tracker is unreachable or returns 403."""
+        try:
+            r = requests.request(method, url, **kwargs)
+            if r.status_code == 403:
+                logging.warning("Token rejected — rejoining network...")
+                self.join_network()
+                # Retry once with new token
+                # Update token in params if present
+                if 'params' in kwargs and 'token' in kwargs['params']:
+                    kwargs['params']['token'] = self.token
+                r = requests.request(method, url, **kwargs)
+            return r
+        except requests.ConnectionError:
+            logging.warning("Tracker unreachable — waiting for UDP rediscovery...")
+            # Wait up to 15 seconds for UDP broadcast to update tracker_url
+            for _ in range(15):
+                time.sleep(1)
+                try:
+                    r = requests.request(method, url, **kwargs)
+                    return r
+                except requests.ConnectionError:
+                    continue
+            raise
+
     def _heartbeat_loop(self):
         """Send a heartbeat to the tracker every 30 seconds."""
         while True:
             time.sleep(30)
             if self.token:
                 try:
-                    requests.post(
+                    self._request_with_reconnect("POST",
                         f"{self.tracker_url}/heartbeat",
                         params={"peer_id": self.peer_id, "token": self.token},
                         timeout=5
@@ -151,7 +186,8 @@ class PeerClient:
         sorted_peers = sorted(new_cluster_latencies.items(), key=lambda x: x[1])
         top_peers = sorted_peers[:MAX_CLUSTER_SIZE]
         
-        self.cluster = dict(top_peers)
+        with self.cluster_lock:
+            self.cluster = dict(top_peers)
         logging.debug(f"Updated Cluster (Size: {len(self.cluster)}): {self.cluster}")
 
     def listen_for_broadcasts(self):
@@ -208,28 +244,35 @@ class PeerClient:
                 time.sleep(2)
 
     def join_network(self) -> bool:
-        """Register with the tracker"""
-        url = f"{self.tracker_url}/join"
+        """Try tracker_url first, then fall back to bootstrap peers."""
+        from shared.config import BOOTSTRAP_PEERS
+        candidates = [self.tracker_url] + [
+            f"http://{addr}" if not addr.startswith("http") else addr
+            for addr in BOOTSTRAP_PEERS
+        ]
+        
         data = {
             "peer_id": self.peer_id,
             "host": self.host,
             "port": self.port,
+            "tcp_port": self.tcp_port,
             "status": "active",
             "public_key": self.public_key
         }
-        try:
-            response = requests.post(url, json=data, timeout=5)
-            if response.status_code == 200:
-                resp_json = response.json()
-                if "token" in resp_json:
-                    self.token = resp_json["token"]
-                logging.info(f"Joined network successfully. Configured port: {self.port}")
-                return True
-            logging.error(f"Join failed: {response.text}")
-            return False
-        except requests.RequestException as e:
-            logging.error(f"Could not connect to tracker: {e}")
-            return False
+        
+        for url in candidates:
+            self.tracker_url = url
+            try:
+                response = requests.post(f"{url}/join", json=data, timeout=5)
+                if response.status_code == 200:
+                    self.token = response.json().get("token")
+                    logging.info(f"Joined via {url}. Configured port: {self.port}")
+                    return True
+            except requests.RequestException:
+                continue
+        
+        logging.error("Could not join any tracker.")
+        return False
 
     def get_metadata(self, file_stem: str) -> Optional[dict]:
         try:
@@ -237,7 +280,7 @@ class PeerClient:
             safe_stem = quote(file_stem, safe='')
             params = {"peer_id": self.peer_id, "token": self.token}
             # Use safe_stem in URL path
-            res = requests.get(f"{self.tracker_url}/metadata/{safe_stem}", params=params)
+            res = self._request_with_reconnect("GET", f"{self.tracker_url}/metadata/{safe_stem}", params=params)
             if res.status_code == 200:
                 return res.json()
             return None
@@ -246,7 +289,7 @@ class PeerClient:
 
     def get_active_peers(self) -> List[dict]:
         try:
-            res = requests.get(
+            res = self._request_with_reconnect("GET", 
                 f"{self.tracker_url}/peers",
                 params={"peer_id": self.peer_id, "token": self.token},
                 timeout=5
@@ -261,7 +304,7 @@ class PeerClient:
     def list_files(self) -> List[dict]:
         """Fetch list of available files from tracker"""
         try:
-            res = requests.get(f"{self.tracker_url}/files")
+            res = self._request_with_reconnect("GET", f"{self.tracker_url}/files")
             if res.status_code == 200:
                 return res.json()
             return []
@@ -273,7 +316,7 @@ class PeerClient:
             from urllib.parse import quote
             safe_stem = quote(file_stem, safe='')
             params = {"peer_id": self.peer_id, "token": self.token}
-            res = requests.get(
+            res = self._request_with_reconnect("GET", 
                 f"{self.tracker_url}/peers/{safe_stem}/{chunk_index}", 
                 params=params
             )
@@ -303,6 +346,10 @@ class PeerClient:
         missing = []
 
         def fetch_chunk(i: int) -> bool:
+            if i >= len(metadata.get("chunks", [])):
+                logging.error(f"Chunk index {i} out of bounds for metadata chunks array.")
+                return False
+
             chunk_name = f"{file_stem}_chunk_{i}"
             chunk_path = local_storage / chunk_name
 
@@ -315,7 +362,8 @@ class PeerClient:
                 return True
 
             peers = self.find_chunk_owners(file_stem, i)
-            peers.sort(key=lambda p: self.cluster.get(p["peer_id"], 9999))
+            with self.cluster_lock:
+                peers.sort(key=lambda p: self.cluster.get(p["peer_id"], 9999))
 
             for peer in peers:
                 if peer["peer_id"] == self.peer_id:
@@ -361,7 +409,7 @@ class PeerClient:
 
     def announce_chunk(self, file_stem: str, chunk_index: int):
         try:
-            requests.post(
+            self._request_with_reconnect("POST", 
                 f"{self.tracker_url}/announce_chunk",
                 params={"peer_id": self.peer_id, "token": self.token},
                 json={"file_stem": file_stem, "chunk_index": chunk_index}
@@ -459,6 +507,12 @@ class PeerClient:
         Signs the assignment file and submits it to the Privileged Node via TCP.
         Returns (success, message)
         """
+        # Ensure we have a valid token before attempting submission
+        if not self.token:
+            logging.info("No token — rejoining before assignment submission...")
+            if not self.join_network():
+                return False, "Not connected to network. Check tracker connection."
+
         try:
             if not file_path.exists():
                 return False, f"File not found: {file_path}"

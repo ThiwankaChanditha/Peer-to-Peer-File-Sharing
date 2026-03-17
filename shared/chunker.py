@@ -1,8 +1,8 @@
 from pathlib import Path
 import hashlib
 import mimetypes
+from shared.config import CHUNK_SIZE, normalize_stem
 
-CHUNK_SIZE = 1024 * 512  # 512 KB
 ADMIN_PORT = 8000
 CHUNK_PORT = 9000
 
@@ -86,7 +86,8 @@ def chunk_file(file_path: str, out_dir: str):
             
             # Create chunk filename without extension for easier handling
             # Format: originalname_chunk_0, originalname_chunk_1, etc.
-            chunk_name = f"{file_path.stem}_chunk_{index}"
+            safe_stem = normalize_stem(file_path.name)
+            chunk_name = f"{safe_stem}_chunk_{index}"
             chunk_path = out_dir_path / chunk_name
 
             with open(chunk_path, "wb") as cf:

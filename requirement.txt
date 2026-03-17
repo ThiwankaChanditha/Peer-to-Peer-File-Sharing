@@ -1,6 +1,0 @@
-fastapi
-uvicorn
-streamlit
-requests
-pydantic
-cryptography

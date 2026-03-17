@@ -70,7 +70,8 @@ def normalize_stem(filename: str, max_len: int = 60) -> str:
     """
     import re, hashlib
     from pathlib import Path
-    stem = Path(filename).stem
+    base_name = Path(filename).name
+    stem = Path(base_name).stem
     # Replace spaces and unsafe chars with underscores
     safe = re.sub(r"[^\w\-]", "_", stem)
     # If too long, truncate and append a short hash for uniqueness
@@ -83,6 +84,7 @@ class PeerInfo(BaseModel):
     peer_id: str
     host: str
     port: int
+    tcp_port: Optional[int] = None
     status: str = "active"
     public_key: Optional[str] = None
     last_seen: float = 0.0          
